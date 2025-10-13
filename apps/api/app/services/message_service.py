@@ -1,32 +1,64 @@
 """
 Message Service - Core business logic for processing messages
+Integrates Phase 5 Memory System with retrieval and LLM generation.
 """
 
 import asyncio
 import uuid
 from typing import AsyncGenerator, Optional
+from datetime import datetime, timezone
 import structlog
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from commons.types.requests import MessageRequest
 from commons.types.responses import MessageResponse, StreamingMessageResponse
-from memory.managers.memory_manager import MemoryManager
+from memory.config import MemoryConfig
+from memory.managers.short_term import ShortTermMemory
+from memory.managers.episodic import EpisodicMemory
+from memory.managers.graph import GraphMemory
+from memory.types import MessageRole, MemoryContext as MemoryContextType
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.types import RetrievalConfig, RetrievalContext
 from llm.factory import LLMFactory, create_provider_from_env
 from ..config import Settings
 
-logger = structlog.get_logger()
+logger = structlog.get_logger(__name__)
 
 
 class MessageService:
-    """Service for processing chat messages."""
+    """
+    Service for processing chat messages with Phase 5 Memory System.
+    
+    Integrates:
+    - Short-term memory (conversation history + auto-summary)
+    - Episodic memory (user facts + PII vaulting)
+    - Semantic memory (KB retrieval)
+    - Graph memory (rules + escalations)
+    """
     
     def __init__(self, settings: Settings, brand_id: Optional[str] = None):
         self.settings = settings
-        self.brand_id = brand_id
+        self.brand_id = brand_id or "default-agent"
         
-        # Initialize memory manager
-        self.memory_manager = MemoryManager()
+        # Initialize MongoDB connection for memory
+        self.mongo_client = AsyncIOMotorClient(settings.MONGODB_URI)
+        self.db = self.mongo_client[settings.MONGODB_DATABASE]
+        
+        # Initialize Phase 5 Memory System
+        self.memory_config = MemoryConfig()
+        self.short_term = ShortTermMemory(self.db)
+        self.episodic = EpisodicMemory(self.db)
+        self.graph = GraphMemory(self.db)
+        self._memory_initialized = False
+        
+        logger.info(
+            "memory_system_initialized",
+            brand_id=self.brand_id,
+            auto_summary=self.memory_config.ENABLE_AUTO_SUMMARY,
+            pii_vaulting=self.memory_config.ENABLE_PII_VAULTING,
+            fact_extraction=self.memory_config.ENABLE_FACT_EXTRACTION,
+            graph_rules=self.memory_config.ENABLE_GRAPH_RULES,
+        )
         
         # Initialize retrieval pipeline with configuration
         retrieval_config = RetrievalConfig(
@@ -48,9 +80,9 @@ class MessageService:
                 config=retrieval_config,
                 brand_id=brand_id
             )
-            logger.info("Retrieval pipeline initialized", brand_id=brand_id)
+            logger.info("retrieval_pipeline_initialized", brand_id=brand_id)
         except Exception as e:
-            logger.warning("Retrieval pipeline initialization failed", error=str(e))
+            logger.warning("retrieval_pipeline_init_failed", error=str(e))
             self.retrieval_pipeline = None
         
         # Initialize LLM provider
@@ -59,78 +91,216 @@ class MessageService:
             api_key=settings.API_KEY,
             model=settings.MODEL_NAME
         )
+        
+        logger.info("message_service_initialized", brand_id=self.brand_id)
+    
+    async def _ensure_memory_initialized(self):
+        """Ensure memory indexes and escalations are initialized (run once)."""
+        if not self._memory_initialized:
+            await self.short_term._ensure_indexes()
+            await self.episodic._ensure_indexes()
+            await self.graph._ensure_indexes()
+            if self.memory_config.ENABLE_GRAPH_RULES:
+                await self.graph.seed_default_escalations()
+            self._memory_initialized = True
+            logger.info("memory_indexes_initialized")
 
     
     async def process_message(self, request: MessageRequest) -> MessageResponse:
-        """Process a single message and return complete response."""
+        """
+        Process a single message with Phase 5 Memory System.
+        
+        Flow:
+        1. Ensure memory initialized
+        2. Store user message in short-term memory
+        3. Check for safety escalations
+        4. Retrieve semantic context (KB)
+        5. Build full memory context (short-term + episodic + graph)
+        6. Generate response with LLM
+        7. Store assistant response
+        8. Extract and store episodic facts
+        9. Check if auto-summary needed
+        """
         try:
+            start_time = datetime.now(timezone.utc)
+            
+            # Ensure memory is initialized
+            await self._ensure_memory_initialized()
+            
             # Generate conversation ID if not provided
             conversation_id = request.conversation_id or str(uuid.uuid4())
+            user_id = request.user_id or "anonymous"
             
-            # Retrieve relevant context
-            context = await self._retrieve_context(request)
-            
-            # Get memory context
-            memory_context = await self.memory_manager.get_context(
-                user_id=request.user_id,
-                conversation_id=conversation_id
+            logger.info(
+                "message_processing_start",
+                conversation_id=conversation_id,
+                user_id=user_id,
+                brand_id=self.brand_id,
             )
             
-            # Generate response using LLM
+            # 1. Store user message in short-term memory
+            await self.short_term.add_message(
+                conversation_id=conversation_id,
+                role=MessageRole.USER,
+                content=request.message,
+                metadata={
+                    "user_id": user_id,
+                    "page_context": request.page_context or {},
+                }
+            )
+            
+            # 2. Check for safety escalations
+            escalations = []
+            if self.memory_config.ENABLE_GRAPH_RULES:
+                escalations = await self.graph.check_escalation(request.message)
+                if escalations:
+                    logger.warning(
+                        "safety_escalation_triggered",
+                        conversation_id=conversation_id,
+                        severity=[e.severity for e in escalations],
+                    )
+            
+            # 3. Retrieve semantic context from knowledge base
+            retrieval_context = await self._retrieve_context(request)
+            
+            # 4. Build full memory context
+            memory_context = await self._build_memory_context(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                query=request.message,
+                escalations=escalations,
+            )
+            
+            # 5. Generate response using LLM
             response_text = await self._generate_response(
                 message=request.message,
-                context=context,
-                memory_context=memory_context
+                retrieval_context=retrieval_context,
+                memory_context=memory_context,
+                escalations=escalations,
             )
             
-            # Update memory with conversation
-            await self.memory_manager.update_memory(
-                user_id=request.user_id,
+            # 6. Store assistant response
+            await self.short_term.add_message(
                 conversation_id=conversation_id,
-                user_message=request.message,
-                assistant_response=response_text
+                role=MessageRole.ASSISTANT,
+                content=response_text,
+                metadata={"user_id": user_id}
             )
             
-            # Extract citations from context
-            citations = self._extract_citations(context)
+            # 7. Extract and store episodic facts (from user message)
+            if self.memory_config.ENABLE_FACT_EXTRACTION:
+                messages = await self.short_term.get_recent_messages(conversation_id, limit=10)
+                facts = await self.episodic.extract_and_store_facts(
+                    user_id=user_id,
+                    messages=messages,
+                    conversation_id=conversation_id
+                )
+                if facts:
+                    logger.info(
+                        "episodic_facts_extracted",
+                        conversation_id=conversation_id,
+                        count=len(facts),
+                    )
+            
+            # 8. Check if auto-summary is needed
+            if self.memory_config.ENABLE_AUTO_SUMMARY:
+                if await self.short_term.should_summarize(conversation_id):
+                    summary = await self.short_term.trigger_summary(conversation_id)
+                    logger.info(
+                        "auto_summary_generated",
+                        conversation_id=conversation_id,
+                        summary_length=len(summary.summary_text),
+                    )
+            
+            # Extract citations from retrieval context
+            citations = self._extract_citations(retrieval_context)
+            
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            logger.info(
+                "message_processing_complete",
+                conversation_id=conversation_id,
+                duration_ms=int(duration * 1000),
+                escalations_count=len(escalations),
+            )
             
             return MessageResponse(
                 message=response_text,
                 conversation_id=conversation_id,
                 citations=citations,
-                context_used=len(context.chunks) if hasattr(context, 'chunks') else 0,
-                confidence_score=context.confidence if hasattr(context, 'confidence') else 0.0
+                context_used=len(retrieval_context.chunks) if hasattr(retrieval_context, 'chunks') else 0,
+                confidence_score=retrieval_context.confidence if hasattr(retrieval_context, 'confidence') else 0.0
             )
             
         except Exception as e:
-            logger.error("Error processing message", error=str(e))
+            logger.error("message_processing_error", error=str(e), exc_info=True)
             raise
     
     async def stream_message(self, request: MessageRequest) -> AsyncGenerator[StreamingMessageResponse, None]:
-        """Process a message and stream the response."""
+        """
+        Process a message and stream the response with Phase 5 Memory System.
+        
+        Same flow as process_message but with streaming response generation.
+        """
         try:
+            start_time = datetime.now(timezone.utc)
+            
+            # Ensure memory initialized
+            await self._ensure_memory_initialized()
+            
             # Generate conversation ID if not provided
             conversation_id = request.conversation_id or str(uuid.uuid4())
+            user_id = request.user_id or "anonymous"
             
-            # Retrieve relevant context
+            # Store user message
+            yield StreamingMessageResponse(
+                type="status",
+                content="Processing message...",
+                conversation_id=conversation_id
+            )
+            
+            await self.short_term.add_message(
+                conversation_id=conversation_id,
+                role=MessageRole.USER,
+                content=request.message,
+                metadata={
+                    "user_id": user_id,
+                    "page_context": request.page_context or {},
+                }
+            )
+            
+            # Check for safety escalations
+            escalations = []
+            if self.memory_config.ENABLE_GRAPH_RULES:
+                escalations = await self.graph.check_escalation(request.message)
+                if escalations:
+                    # Send escalation warning
+                    yield StreamingMessageResponse(
+                        type="warning",
+                        content=f"Safety escalation: {escalations[0].severity}",
+                        conversation_id=conversation_id
+                    )
+            
+            # Retrieve semantic context
             yield StreamingMessageResponse(
                 type="status",
                 content="Retrieving context...",
                 conversation_id=conversation_id
             )
             
-            context = await self._retrieve_context(request)
+            retrieval_context = await self._retrieve_context(request)
             
-            # Get memory context
+            # Build memory context
             yield StreamingMessageResponse(
                 type="status",
                 content="Loading memory...",
                 conversation_id=conversation_id
             )
             
-            memory_context = await self.memory_manager.get_context(
-                user_id=request.user_id,
-                conversation_id=conversation_id
+            memory_context = await self._build_memory_context(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                query=request.message,
+                escalations=escalations,
             )
             
             # Stream response generation
@@ -143,8 +313,9 @@ class MessageService:
             response_chunks = []
             async for chunk in self._stream_response(
                 message=request.message,
-                context=context,
-                memory_context=memory_context
+                retrieval_context=retrieval_context,
+                memory_context=memory_context,
+                escalations=escalations,
             ):
                 response_chunks.append(chunk)
                 yield StreamingMessageResponse(
@@ -156,27 +327,48 @@ class MessageService:
             # Combine full response
             full_response = "".join(response_chunks)
             
-            # Update memory
-            await self.memory_manager.update_memory(
-                user_id=request.user_id,
+            # Store assistant response
+            await self.short_term.add_message(
                 conversation_id=conversation_id,
-                user_message=request.message,
-                assistant_response=full_response
+                role=MessageRole.ASSISTANT,
+                content=full_response,
+                metadata={"user_id": user_id}
             )
             
+            # Extract episodic facts
+            if self.memory_config.ENABLE_FACT_EXTRACTION:
+                messages = await self.short_term.get_recent_messages(conversation_id, limit=10)
+                facts = await self.episodic.extract_and_store_facts(
+                    user_id=user_id,
+                    messages=messages,
+                    conversation_id=conversation_id
+                )
+            
+            # Check auto-summary
+            if self.memory_config.ENABLE_AUTO_SUMMARY:
+                if await self.short_term.should_summarize(conversation_id):
+                    await self.short_term.trigger_summary(conversation_id)
+            
             # Send final metadata
-            citations = self._extract_citations(context)
+            citations = self._extract_citations(retrieval_context)
             yield StreamingMessageResponse(
                 type="metadata",
                 content="",
                 conversation_id=conversation_id,
                 citations=citations,
-                context_used=len(context.chunks) if hasattr(context, 'chunks') else 0,
-                confidence_score=context.confidence if hasattr(context, 'confidence') else 0.0
+                context_used=len(retrieval_context.chunks) if hasattr(retrieval_context, 'chunks') else 0,
+                confidence_score=retrieval_context.confidence if hasattr(retrieval_context, 'confidence') else 0.0
+            )
+            
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            logger.info(
+                "message_streaming_complete",
+                conversation_id=conversation_id,
+                duration_ms=int(duration * 1000),
             )
             
         except Exception as e:
-            logger.error("Error streaming message", error=str(e))
+            logger.error("message_streaming_error", error=str(e), exc_info=True)
             yield StreamingMessageResponse(
                 type="error",
                 content=f"Error: {str(e)}",
@@ -219,64 +411,197 @@ class MessageService:
                 retrieval_metadata={"error": str(e)}
             )
     
-    async def _generate_response(self, message: str, context: RetrievalContext, memory_context: dict) -> str:
-        """Generate response using LLM."""
+    async def _build_memory_context(
+        self,
+        conversation_id: str,
+        user_id: str,
+        query: str,
+        escalations: list,
+    ) -> dict:
+        """
+        Build unified memory context from all layers.
+        
+        Returns dict with:
+        - recent_messages: Last N messages from short-term
+        - user_facts: User preferences from episodic memory
+        - matched_rules: Graph rules matching the query
+        - escalations: Safety escalation triggers
+        - summaries: Conversation summaries
+        """
+        # Get short-term messages
+        recent_messages = await self.short_term.get_recent_messages(
+            conversation_id, limit=10
+        )
+        
+        # Get user facts from episodic memory
+        user_facts = []
+        if self.memory_config.ENABLE_FACT_EXTRACTION:
+            user_facts = await self.episodic.get_user_facts(user_id, limit=20)
+        
+        # Get matched graph rules
+        matched_rules = []
+        if self.memory_config.ENABLE_GRAPH_RULES:
+            matched_rules = await self.graph.match_rules(
+                brand_id=self.brand_id,
+                query=query,
+                context={},
+            )
+        
+        # Get conversation summaries
+        summaries = []
+        try:
+            summaries_cursor = self.short_term.summaries.find(
+                {"conversation_id": conversation_id}
+            ).sort("created_at", -1).limit(3)
+            summaries = await summaries_cursor.to_list(length=3)
+        except Exception as e:
+            logger.warning("failed_to_get_summaries", error=str(e))
+        
+        return {
+            "recent_messages": recent_messages,
+            "user_facts": user_facts,
+            "matched_rules": matched_rules,
+            "escalations": escalations,
+            "summaries": summaries,
+        }
+    
+    async def _generate_response(
+        self,
+        message: str,
+        retrieval_context: RetrievalContext,
+        memory_context: dict,
+        escalations: list,
+    ) -> str:
+        """Generate response using LLM with full context."""
         try:
             # Build prompt with context and memory
-            prompt = self._build_prompt(message, context, memory_context)
+            prompt = self._build_prompt(
+                message,
+                retrieval_context,
+                memory_context,
+                escalations,
+            )
             
             # Generate response
             response = await self.llm_provider.generate(prompt)
             return response.content
             
         except Exception as e:
-            logger.error("Error generating response", error=str(e))
+            logger.error("llm_generation_error", error=str(e))
             return "I apologize, but I encountered an error while processing your request."
     
-    async def _stream_response(self, message: str, context: RetrievalContext, memory_context: dict) -> AsyncGenerator[str, None]:
-        """Stream response generation using LLM."""
+    async def _stream_response(
+        self,
+        message: str,
+        retrieval_context: RetrievalContext,
+        memory_context: dict,
+        escalations: list,
+    ) -> AsyncGenerator[str, None]:
+        """Stream response generation using LLM with full context."""
         try:
             # Build prompt with context and memory
-            prompt = self._build_prompt(message, context, memory_context)
+            prompt = self._build_prompt(
+                message,
+                retrieval_context,
+                memory_context,
+                escalations,
+            )
             
             # Stream response
             async for chunk in self.llm_provider.stream(prompt):
                 yield chunk.content
                 
         except Exception as e:
-            logger.error("Error streaming response", error=str(e))
+            logger.error("llm_streaming_error", error=str(e))
             yield "I apologize, but I encountered an error while processing your request."
     
-    def _build_prompt(self, message: str, context: RetrievalContext, memory_context: dict) -> str:
-        """Build prompt with context and memory."""
+    def _build_prompt(
+        self,
+        message: str,
+        retrieval_context: RetrievalContext,
+        memory_context: dict,
+        escalations: list,
+    ) -> str:
+        """
+        Build comprehensive prompt with all context layers.
+        
+        Includes:
+        - System instructions with brand voice
+        - Safety escalation warnings
+        - Knowledge base context (semantic memory)
+        - Recent conversation (short-term memory)
+        - User preferences (episodic memory)
+        - Matched rules (graph memory)
+        """
         prompt_parts = []
         
         # System instruction
         prompt_parts.append(
-            "You are a helpful AI assistant. Use the provided context to answer questions accurately. "
+            "You are a helpful AI assistant for customer support. "
+            "Use the provided context to answer questions accurately and helpfully. "
             "If you cannot find relevant information in the context, say so clearly. "
             "Always cite your sources when possible."
         )
         
-        # Add context chunks
-        if context.chunks:
-            prompt_parts.append("\nRelevant Context:")
-            for i, chunk in enumerate(context.chunks):
+        # Add safety escalation warnings
+        if escalations:
+            prompt_parts.append("\n⚠️  SAFETY ALERT:")
+            for esc in escalations[:2]:  # Top 2 escalations
+                prompt_parts.append(
+                    f"- {esc.severity.upper()}: {', '.join(esc.trigger_keywords)} detected"
+                )
+                if esc.action.get("type") == "escalate_emergency":
+                    prompt_parts.append(
+                        "  → Recommend immediate action: " + esc.action.get("message", "Contact emergency services")
+                    )
+        
+        # Add knowledge base context (semantic memory)
+        if retrieval_context.chunks:
+            prompt_parts.append("\n📚 Knowledge Base Context:")
+            for i, chunk in enumerate(retrieval_context.chunks[:5]):  # Top 5 chunks
                 citation = f"[{i+1}]"
                 if chunk.title:
-                    citation += f" ({chunk.title})"
-                prompt_parts.append(f"{citation} {chunk.content}")
+                    citation += f" {chunk.title}"
+                prompt_parts.append(f"{citation}: {chunk.content[:200]}...")  # Truncate for prompt
         
-        # Add memory context
+        # Add user preferences (episodic memory)
+        if memory_context.get("user_facts"):
+            facts = memory_context["user_facts"][:5]  # Top 5 facts
+            if facts:
+                prompt_parts.append("\n👤 User Preferences:")
+                for fact in facts:
+                    prompt_parts.append(f"- {fact.fact}")
+        
+        # Add conversation summaries (short-term memory)
+        if memory_context.get("summaries"):
+            summaries = memory_context["summaries"][:2]  # Latest 2 summaries
+            if summaries:
+                prompt_parts.append("\n📝 Previous Conversation Summary:")
+                for summary in summaries:
+                    prompt_parts.append(f"- {summary.get('summary_text', '')}")
+        
+        # Add recent conversation (short-term memory)
         if memory_context.get("recent_messages"):
-            prompt_parts.append("\nRecent Conversation:")
-            for msg in memory_context["recent_messages"][-3:]:  # Last 3 messages
-                prompt_parts.append(f"User: {msg.get('user_message', '')}")
-                prompt_parts.append(f"Assistant: {msg.get('assistant_response', '')}")
+            recent = memory_context["recent_messages"][-4:]  # Last 4 messages
+            if len(recent) > 1:  # More than just the current user message
+                prompt_parts.append("\n💬 Recent Conversation:")
+                for msg in recent[:-1]:  # Exclude the current message
+                    role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+                    prompt_parts.append(f"{role.capitalize()}: {msg.content}")
+        
+        # Add matched rules (graph memory)
+        if memory_context.get("matched_rules"):
+            rules = memory_context["matched_rules"][:2]  # Top 2 rules
+            if rules:
+                prompt_parts.append("\n📋 Relevant Policies:")
+                for rule in rules:
+                    prompt_parts.append(
+                        f"- {rule.name}: {rule.action.get('message', 'See documentation')}"
+                    )
         
         # Add current message
-        prompt_parts.append(f"\nUser: {message}")
-        prompt_parts.append("Assistant:")
+        prompt_parts.append(f"\n👤 User: {message}")
+        prompt_parts.append("\n🤖 Assistant:")
         
         return "\n".join(prompt_parts)
     
