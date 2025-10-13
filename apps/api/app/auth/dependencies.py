@@ -1,0 +1,358 @@
+"""
+FastAPI dependencies for authentication and authorization.
+"""
+
+from typing import Optional
+from fastapi import Depends, HTTPException, status, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from motor.motor_asyncio import AsyncIOMotorClient
+import structlog
+
+from ..config import Settings
+from ..connections import connection_manager
+from .jwt import decode_and_verify_token
+from .api_keys import verify_api_key, extract_key_id
+from .models import User, UserRole, Permission, APIKey, ROLE_PERMISSIONS
+
+logger = structlog.get_logger()
+settings = Settings()
+
+# Security schemes
+security = HTTPBearer()
+
+
+async def get_db() -> AsyncIOMotorClient:
+    """Get database connection."""
+    return connection_manager.get_mongodb()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncIOMotorClient = Depends(get_db)
+) -> User:
+    """
+    Get current user from JWT token.
+    
+    Args:
+        credentials: Bearer token from Authorization header
+        db: Database connection
+    
+    Returns:
+        Current user
+    
+    Raises:
+        HTTPException: If authentication fails
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    token = credentials.credentials
+    
+    # Verify and decode token
+    payload = decode_and_verify_token(token, token_type="access")
+    if payload is None:
+        logger.warning("invalid_token")
+        raise credentials_exception
+    
+    user_id = payload.get("user_id")
+    if user_id is None:
+        logger.warning("token_missing_user_id")
+        raise credentials_exception
+    
+    # Get user from database
+    users_collection = db[settings.MONGODB_DATABASE].users
+    user_doc = await users_collection.find_one({"_id": user_id})
+    
+    if user_doc is None:
+        logger.warning("user_not_found", user_id=user_id)
+        raise credentials_exception
+    
+    user = User(**user_doc)
+    
+    # Check if user is locked
+    if user.is_locked():
+        logger.warning("account_locked", user_id=user_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Account is locked until {user.locked_until.isoformat()}"
+        )
+    
+    return user
+
+
+async def get_current_active_user(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """
+    Get current active user.
+    
+    Args:
+        current_user: Current user from token
+    
+    Returns:
+        Active user
+    
+    Raises:
+        HTTPException: If user is inactive
+    """
+    if not current_user.is_active:
+        logger.warning("inactive_user_access", user_id=current_user.id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
+    
+    return current_user
+
+
+async def get_api_key_user(
+    x_api_key: Optional[str] = Header(None),
+    db: AsyncIOMotorClient = Depends(get_db)
+) -> User:
+    """
+    Get user from API key.
+    
+    Args:
+        x_api_key: API key from X-API-Key header
+        db: Database connection
+    
+    Returns:
+        User associated with API key
+    
+    Raises:
+        HTTPException: If API key is invalid
+    """
+    if x_api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key required"
+        )
+    
+    # Extract key ID
+    key_id = extract_key_id(x_api_key)
+    if key_id is None:
+        logger.warning("invalid_api_key_format")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key format"
+        )
+    
+    # Get API key from database
+    api_keys_collection = db[settings.MONGODB_DATABASE].api_keys
+    api_key_doc = await api_keys_collection.find_one({"key_id": key_id})
+    
+    if api_key_doc is None:
+        logger.warning("api_key_not_found", key_id=key_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+    
+    api_key = APIKey(**api_key_doc)
+    
+    # Verify API key
+    if not verify_api_key(x_api_key, api_key.key_hash):
+        logger.warning("api_key_verification_failed", key_id=key_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+    
+    # Check if API key is valid
+    if not api_key.is_valid():
+        logger.warning("api_key_invalid", key_id=key_id, is_active=api_key.is_active)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key is expired or inactive"
+        )
+    
+    # Update last used timestamp
+    await api_keys_collection.update_one(
+        {"_id": api_key.id},
+        {
+            "$set": {"usage.last_used": "now"},
+            "$inc": {"usage.total_requests": 1}
+        }
+    )
+    
+    # Get user
+    users_collection = db[settings.MONGODB_DATABASE].users
+    user_doc = await users_collection.find_one({"_id": api_key.user_id})
+    
+    if user_doc is None:
+        logger.error("api_key_user_not_found", user_id=api_key.user_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+    
+    user = User(**user_doc)
+    
+    # Check if user is active
+    if not user.is_active:
+        logger.warning("inactive_user_api_key", user_id=user.id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
+    
+    return user
+
+
+async def get_user_from_token_or_api_key(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Header(None),
+    db: AsyncIOMotorClient = Depends(get_db)
+) -> User:
+    """
+    Get user from either JWT token or API key.
+    
+    Tries JWT first, then falls back to API key.
+    
+    Args:
+        credentials: Bearer token (optional)
+        x_api_key: API key (optional)
+        db: Database connection
+    
+    Returns:
+        Authenticated user
+    
+    Raises:
+        HTTPException: If authentication fails
+    """
+    # Try JWT first
+    if credentials is not None:
+        try:
+            return await get_current_user(credentials, db)
+        except HTTPException:
+            # If JWT fails and no API key, raise error
+            if x_api_key is None:
+                raise
+    
+    # Try API key
+    if x_api_key is not None:
+        return await get_api_key_user(x_api_key, db)
+    
+    # No authentication provided
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required (JWT token or API key)"
+    )
+
+
+def require_role(*allowed_roles: UserRole):
+    """
+    Dependency factory to require specific roles.
+    
+    Usage:
+        @router.get("/admin")
+        async def admin_endpoint(user: User = Depends(require_role(UserRole.ADMIN))):
+            ...
+    
+    Args:
+        allowed_roles: Allowed user roles
+    
+    Returns:
+        FastAPI dependency
+    """
+    async def role_checker(user: User = Depends(get_current_active_user)) -> User:
+        if user.role not in allowed_roles:
+            logger.warning(
+                "insufficient_role",
+                user_id=user.id,
+                user_role=user.role,
+                required_roles=[r.value for r in allowed_roles]
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Insufficient permissions. Required roles: {', '.join(r.value for r in allowed_roles)}"
+            )
+        return user
+    
+    return role_checker
+
+
+def require_permission(*required_permissions: Permission):
+    """
+    Dependency factory to require specific permissions.
+    
+    Usage:
+        @router.delete("/brands/{brand_id}")
+        async def delete_brand(
+            brand_id: str,
+            user: User = Depends(require_permission(Permission.BRAND_DELETE))
+        ):
+            ...
+    
+    Args:
+        required_permissions: Required permissions
+    
+    Returns:
+        FastAPI dependency
+    """
+    async def permission_checker(user: User = Depends(get_current_active_user)) -> User:
+        # Check if user has all required permissions
+        user_permissions = ROLE_PERMISSIONS.get(user.role, [])
+        
+        missing_permissions = [
+            perm for perm in required_permissions
+            if perm not in user_permissions
+        ]
+        
+        if missing_permissions:
+            logger.warning(
+                "insufficient_permissions",
+                user_id=user.id,
+                user_role=user.role,
+                missing_permissions=[p.value for p in missing_permissions]
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Insufficient permissions. Required: {', '.join(p.value for p in required_permissions)}"
+            )
+        
+        return user
+    
+    return permission_checker
+
+
+def require_brand_access(brand_id_param: str = "brand_id"):
+    """
+    Dependency factory to require access to a specific brand.
+    
+    Usage:
+        @router.get("/brands/{brand_id}/agents")
+        async def get_brand_agents(
+            brand_id: str,
+            user: User = Depends(require_brand_access("brand_id"))
+        ):
+            ...
+    
+    Args:
+        brand_id_param: Name of the path/query parameter containing brand_id
+    
+    Returns:
+        FastAPI dependency
+    """
+    async def brand_access_checker(
+        brand_id: str,
+        user: User = Depends(get_current_active_user)
+    ) -> User:
+        if not user.has_brand_access(brand_id):
+            logger.warning(
+                "brand_access_denied",
+                user_id=user.id,
+                brand_id=brand_id,
+                user_brands=user.brands
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"No access to brand {brand_id}"
+            )
+        
+        return user
+    
+    return brand_access_checker

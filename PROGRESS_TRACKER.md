@@ -1,21 +1,23 @@
 # Agent Builder Platform - Progress Tracker
 
-Visual progress tracking for all platform components.
+**Last Updated**: October 14, 2025 (Post-Phase 6 Authentication)  
+Visual progress tracking for all platform components and critical production gaps.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                    AGENT BUILDER PLATFORM                        │
-│                    Overall: 85% Complete                          │
+│                    Overall: 82% Complete                         │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
 │  CORE SYSTEMS                                                    │
 ├──────────────────────────────────────────────────────────────────┤
-│  Retrieval Pipeline        [████████████████████] 95%  ✅        │
-│  Infrastructure            [█████████████████░░░] 90%  ✅        │
-│  Message Service           [█████████████████░░░] 95%  ✅        │
-│  LLM Integration           [█████████████░░░░░░░] 70%  🚧        │
-│  Memory Systems            [█████░░░░░░░░░░░░░░░] 25%  🚧        │
+│  Retrieval Pipeline        [████████████████████] 100% ✅        │
+│  Infrastructure            [████████████████████] 100% ✅        │
+│  Message Service           [████████████████████] 100% ✅        │
+│  LLM Integration           [███████████████░░░░░] 75%  ✅        │
+│  Memory Systems            [████████████████████] 100% ✅        │
+│  Authentication & Security [███████████████░░░░░] 75%  🚧        │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
@@ -81,48 +83,75 @@ Visual progress tracking for all platform components.
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
-│  MEMORY SYSTEMS (Next Phase)                                    │
+│  MEMORY SYSTEMS (Phase 5 - COMPLETE)                            │
 ├──────────────────────────────────────────────────────────────────┤
-│  Short-Term Buffer         [█████░░░░░░░░░░░░░░░] 25%  📋        │
-│  Auto-Summary (4 turns)    [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  Episodic Memory           [██░░░░░░░░░░░░░░░░░░] 10%  📋        │
-│  PII Vaulting              [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  TTL Cleanup               [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  Semantic KB               [██████░░░░░░░░░░░░░░] 30%  📋        │
-│  Graph Rules               [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  Short-Term Buffer         [████████████████████] 100% ✅        │
+│  Auto-Summary (4 turns)    [████████████████░░░░] 80%  ✅*       │
+│  Episodic Memory           [████████████████████] 100% ✅        │
+│  PII Vaulting              [████████████████████] 100% ✅        │
+│  TTL Cleanup               [████████████████████] 100% ✅        │
+│  Semantic KB               [████████████████████] 100% ✅        │
+│  Graph Rules               [████████████████████] 100% ✅        │
+│                                                                  │
+│  * Auto-summary implemented, needs LLM integration               │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
-│  SECURITY & AUTH (Next Phase)                                   │
+│  AUTHENTICATION & SECURITY (Phase 6 - 75% COMPLETE)             │
 ├──────────────────────────────────────────────────────────────────┤
-│  JWT Validation            [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  API Key Management        [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  Rate Limiting             [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  RBAC/ABAC                 [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  Core Auth Infrastructure  [████████████████████] 100% ✅        │
+│  ├─ JWT Operations         [████████████████████] 100% ✅        │
+│  ├─ Password Security      [████████████████████] 100% ✅        │
+│  ├─ API Key System         [████████████████████] 100% ✅        │
+│  └─ FastAPI Dependencies   [████████████████████] 100% ✅        │
+│                                                                  │
+│  Security Features         [████████████████████] 100% ✅        │
+│  ├─ Rate Limiting          [████████████████████] 100% ✅        │
+│  ├─ RBAC System            [████████████████████] 100% ✅        │
+│  └─ Brand Access Control   [████████████████████] 100% ✅        │
+│                                                                  │
+│  API Endpoints             [█████░░░░░░░░░░░░░░░] 25%  🚧        │
+│  ├─ Login/Logout           [████████████████████] 100% ✅        │
+│  ├─ Registration           [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  ├─ Token Refresh          [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  ├─ API Key CRUD           [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  └─ User Management        [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│                                                                  │
+│  Integration               [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  ├─ Auth Router in main.py [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  ├─ Protect Messages API   [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  ├─ Protect Ingestion API  [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  └─ Protect Admin APIs     [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│                                                                  │
 │  Content Filtering         [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  PII Redaction             [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  PII Redaction in Logs     [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
 │  ADMIN DASHBOARD                                                 │
 ├──────────────────────────────────────────────────────────────────┤
-│  React Setup               [████████████░░░░░░░░] 60%  🚧        │
-│  Brand Management          [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  Agent Wizard              [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  Document Manager          [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  System Prompt Editor      [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  React Setup               [████████████████████] 100% ✅        │
+│  Brand Management UI       [██████████░░░░░░░░░░] 50%  �        │
+│  Agent Wizard UI           [████████████████░░░░] 80%  �        │
+│  Document Upload UI        [██████░░░░░░░░░░░░░░] 30%  🚧        │
+│  YAML Generation           [████████████████░░░░] 80%  �        │
+│  Agent Testing Interface   [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
 │  Analytics Dashboard       [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  Backend API Connection    [░░░░░░░░░░░░░░░░░░░░]  0%  ⚠️         │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
 │  WIDGET SDK                                                      │
 ├──────────────────────────────────────────────────────────────────┤
-│  React Components          [████████░░░░░░░░░░░░] 40%  🚧        │
-│  Page Context Extraction   [██████░░░░░░░░░░░░░░] 30%  🚧        │
-│  WebSocket Streaming       [████░░░░░░░░░░░░░░░░] 20%  🚧        │
-│  SSE Fallback              [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
-│  Citation Display          [██░░░░░░░░░░░░░░░░░░] 10%  📋        │
-│  UI/UX Polish              [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  React Components          [██████████████░░░░░░] 70%  🚧        │
+│  Basic Chat Interface      [████████████████████] 100% ✅        │
+│  Message Display           [████████████████████] 100% ✅        │
+│  Typing Indicators         [████████████████████] 100% ✅        │
+│  Page Context Extraction   [░░░░░░░░░░░░░░░░░░░░]  0%  ⚠️         │
+│  WebSocket Streaming       [░░░░░░░░░░░░░░░░░░░░]  0%  ⚠️         │
+│  SSE Fallback              [░░░░░░░░░░░░░░░░░░░░]  0%  ⚠️         │
+│  Citation Display          [░░░░░░░░░░░░░░░░░░░░]  0%  📋        │
+│  Backend Integration       [░░░░░░░░░░░░░░░░░░░░]  0%  ⚠️         │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
@@ -300,6 +329,347 @@ Current Status: 85% Complete
 
 ---
 
-**Last Updated**: End of Phase 4  
-**Status**: ✅ Core systems production-ready  
-**Next Action**: Choose Phase 5 or Phase 6 based on priority
+---
+
+## 🚨 CRITICAL GAPS FOR PRODUCTION
+
+### ⚠️ BLOCKERS (Must Fix Before Production)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  1. WEBSOCKET/SSE STREAMING NOT IMPLEMENTED                     │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: CRITICAL - No real-time responses                      │
+│  Status: ❌ NOT STARTED                                          │
+│  Location: apps/api/app/api/v1/endpoints/messages.py           │
+│  Current: Only REST endpoints exist                             │
+│  Needed:                                                        │
+│    - WebSocket endpoint at /ws/messages/{conversation_id}       │
+│    - SSE endpoint at /stream/messages                           │
+│    - Token-level streaming from LLM                             │
+│    - Connection management & error handling                     │
+│  Effort: 4-6 hours                                              │
+│  Priority: P0 - Required for MVP                               │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  2. AUTHENTICATION NOT INTEGRATED                                │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: CRITICAL - API is completely open                      │
+│  Status: 🚧 75% DONE (core built, not wired)                    │
+│  Issues:                                                        │
+│    ❌ auth_router not included in main.py                       │
+│    ❌ Existing endpoints not protected                          │
+│    ❌ Missing registration endpoint (register.py)               │
+│    ❌ Missing token refresh endpoint (tokens.py)                │
+│    ❌ Missing API key CRUD (api_keys.py)                        │
+│    ❌ Missing user management (users.py)                        │
+│  Effort: 3-4 hours to complete & integrate                     │
+│  Priority: P0 - Security requirement                           │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  3. WIDGET NOT CONNECTED TO BACKEND                             │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: CRITICAL - Widget is just UI shell                     │
+│  Status: ❌ NOT IMPLEMENTED                                      │
+│  Missing:                                                       │
+│    ❌ API client integration                                     │
+│    ❌ WebSocket connection logic                                │
+│    ❌ Page context extraction                                   │
+│    ❌ Message sending/receiving                                 │
+│    ❌ Citation display                                          │
+│  Current: Mockup components only, no data flow                 │
+│  Effort: 6-8 hours                                              │
+│  Priority: P0 - Core functionality                             │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  4. ADMIN DASHBOARD NOT CONNECTED                                │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: HIGH - Cannot manage system                            │
+│  Status: 🚧 UI exists, no backend connection                    │
+│  Missing:                                                       │
+│    ❌ API client configuration                                   │
+│    ❌ Brand creation/editing doesn't persist                    │
+│    ❌ Agent wizard doesn't deploy agents                        │
+│    ❌ Document upload doesn't call ingestion API                │
+│    ❌ No real-time status updates                               │
+│  Effort: 4-5 hours                                              │
+│  Priority: P1 - Operational requirement                        │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  5. AUTO-SUMMARY LLM INTEGRATION MISSING                         │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: MEDIUM - Memory works but no summaries                 │
+│  Status: 🚧 TODO comment in code                                │
+│  Location: packages/memory/src/memory/managers/short_term.py:240│
+│  Current: Placeholder "Conversation with N messages"            │
+│  Needed: LLM call to generate actual summary                   │
+│  Effort: 2-3 hours                                              │
+│  Priority: P2 - Nice to have                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🔴 HIGH PRIORITY GAPS
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  6. NO TEST COVERAGE FOR AUTH SYSTEM                             │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: HIGH - Security code untested                          │
+│  Missing: Unit & integration tests for 1,840 lines of auth code│
+│  Effort: 4-6 hours                                              │
+│  Priority: P1                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  7. NO DEPLOYMENT INFRASTRUCTURE                                 │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: HIGH - Cannot deploy to production                     │
+│  Missing:                                                       │
+│    ❌ Dockerfile for API                                         │
+│    ❌ docker-compose.yml                                         │
+│    ❌ Kubernetes manifests                                       │
+│    ❌ Helm charts                                                │
+│    ❌ CI/CD pipeline (GitHub Actions)                           │
+│  Effort: 6-8 hours                                              │
+│  Priority: P1                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  8. NO MONITORING/OBSERVABILITY                                  │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: HIGH - Cannot monitor production issues                │
+│  Missing:                                                       │
+│    ❌ Prometheus metrics collection                              │
+│    ❌ Grafana dashboards                                         │
+│    ❌ OpenTelemetry traces (structure exists, not enabled)      │
+│    ❌ Alert configuration                                        │
+│    ❌ Log aggregation                                            │
+│  Effort: 6-8 hours                                              │
+│  Priority: P1                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  9. CONTENT FILTERING & PII REDACTION NOT IMPLEMENTED            │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: HIGH - GDPR/compliance risk                            │
+│  Status: PII vault exists, but no log redaction                │
+│  Missing:                                                       │
+│    ❌ Input content filtering                                    │
+│    ❌ PII detection in logs                                      │
+│    ❌ Automatic redaction                                        │
+│    ❌ Audit trail for PII access                                │
+│  Effort: 4-5 hours                                              │
+│  Priority: P1 - Legal requirement                              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🟡 MEDIUM PRIORITY GAPS
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  10. EVALUATION HARNESS MISSING                                  │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: MEDIUM - Cannot validate quality                       │
+│  Missing: Automated testing for retrieval quality               │
+│  Effort: 8-10 hours                                             │
+│  Priority: P2                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  11. LIMITED UNIT TEST COVERAGE                                  │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: MEDIUM - Code quality risk                             │
+│  Current: ~10% coverage (integration tests only)                │
+│  Target: >80% coverage                                          │
+│  Effort: 12-15 hours                                            │
+│  Priority: P2                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  12. ERROR HANDLING & RETRY LOGIC INCOMPLETE                     │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: MEDIUM - Production stability                          │
+│  Missing: Comprehensive error handling, circuit breakers        │
+│  Effort: 4-6 hours                                              │
+│  Priority: P2                                                   │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  13. RATE LIMITING NOT ACTIVE                                    │
+├──────────────────────────────────────────────────────────────────┤
+│  Impact: MEDIUM - DDoS vulnerability                            │
+│  Status: Code exists but not integrated                         │
+│  Needed: Add middleware to main.py                              │
+│  Effort: 1-2 hours                                              │
+│  Priority: P2                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📊 PRODUCTION READINESS CHECKLIST
+
+### Core Functionality (P0 - Must Have)
+- [ ] **WebSocket/SSE streaming** (4-6 hours)
+- [ ] **Authentication integration** (3-4 hours)
+- [ ] **Widget backend connection** (6-8 hours)
+- [ ] **Admin dashboard connection** (4-5 hours)
+- [ ] **Basic error handling** (2-3 hours)
+
+**Subtotal: 19-26 hours**
+
+### Security & Compliance (P1 - Critical)
+- [ ] **Auth endpoint completion** (3-4 hours)
+- [ ] **Rate limiting activation** (1-2 hours)
+- [ ] **Content filtering** (4-5 hours)
+- [ ] **PII log redaction** (2-3 hours)
+- [ ] **Auth test coverage** (4-6 hours)
+
+**Subtotal: 14-20 hours**
+
+### Operations (P1 - Required)
+- [ ] **Docker images** (3-4 hours)
+- [ ] **docker-compose setup** (2-3 hours)
+- [ ] **Basic monitoring** (4-5 hours)
+- [ ] **Health checks** (1-2 hours)
+- [ ] **Deployment docs** (2-3 hours)
+
+**Subtotal: 12-17 hours**
+
+### Quality Assurance (P2 - Important)
+- [ ] **Unit tests** (12-15 hours)
+- [ ] **Integration tests** (6-8 hours)
+- [ ] **E2E tests** (4-6 hours)
+- [ ] **Evaluation harness** (8-10 hours)
+
+**Subtotal: 30-39 hours**
+
+---
+
+## ⏱️ TIME TO PRODUCTION ESTIMATES
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  MVP (Minimum Viable Product)                                   │
+│  ────────────────────────────────────────────────────────────── │
+│  P0 Items Only: 19-26 hours                                     │
+│  Timeline: 3-4 days full-time                                   │
+│  Result: Functional but not secure                              │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  Production Beta (Recommended Minimum)                           │
+│  ────────────────────────────────────────────────────────────── │
+│  P0 + P1 Items: 45-63 hours                                     │
+│  Timeline: 6-8 days full-time                                   │
+│  Result: Secure, deployable, limited monitoring                 │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│  Production Ready (Full Quality)                                │
+│  ────────────────────────────────────────────────────────────── │
+│  P0 + P1 + P2 Items: 75-102 hours                              │
+│  Timeline: 10-13 days full-time                                 │
+│  Result: Enterprise-grade, monitored, tested                    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🎯 RECOMMENDED ACTION PLAN
+
+### Week 1: Core Functionality (MVP)
+**Day 1-2**: WebSocket/SSE streaming (P0)
+- Implement WebSocket endpoint
+- Implement SSE endpoint
+- Token-level streaming from LLM
+- Connection management
+
+**Day 3**: Authentication integration (P0)
+- Include auth_router in main.py
+- Complete missing endpoints (register, tokens, api_keys, users)
+- Protect existing endpoints
+
+**Day 4-5**: Frontend connections (P0)
+- Widget backend integration
+- Admin dashboard API connection
+- Basic error handling
+
+**MVP Checkpoint**: Functional system (unsecure)
+
+---
+
+### Week 2: Security & Operations (Production Beta)
+**Day 6-7**: Security completion (P1)
+- Activate rate limiting
+- Content filtering
+- PII log redaction
+- Auth test coverage
+
+**Day 8-9**: Deployment infrastructure (P1)
+- Dockerfile & docker-compose
+- Basic monitoring setup
+- Health checks
+- Deployment documentation
+
+**Day 10**: Integration testing & bug fixes
+
+**Production Beta Checkpoint**: Deployable, secure system
+
+---
+
+### Week 3: Quality & Monitoring (Production Ready)
+**Day 11-13**: Test coverage (P2)
+- Unit tests
+- Integration tests
+- E2E tests
+
+**Day 14-15**: Observability (P2)
+- Prometheus/Grafana setup
+- OpenTelemetry activation
+- Alert configuration
+
+**Production Ready Checkpoint**: Enterprise-grade system
+
+---
+
+## 📝 IMMEDIATE NEXT STEPS (Next Session)
+
+### Option A: MVP Sprint (Recommended)
+1. **WebSocket/SSE implementation** (4-6 hours)
+   - Highest value, enables real-time chat
+2. **Auth integration** (3-4 hours)
+   - Makes system usable (login/logout)
+3. **Widget connection** (6-8 hours)
+   - End-to-end user flow working
+4. **Quick test** (1 hour)
+   - Verify chat works end-to-end
+
+**Result**: Working demo in 14-19 hours
+
+### Option B: Security First (Production Path)
+1. **Complete auth endpoints** (3-4 hours)
+2. **Integrate auth into APIs** (2-3 hours)
+3. **Activate rate limiting** (1-2 hours)
+4. **Add auth tests** (4-6 hours)
+5. **WebSocket/SSE** (4-6 hours)
+
+**Result**: Secure foundation in 14-21 hours
+
+### Option C: Full Production Path
+Follow Week 1 → Week 2 → Week 3 plan above
+
+---
+
+**Last Updated**: October 14, 2025 - Post Phase 6 Review  
+**Current Status**: 82% Complete - Core systems operational, integration needed  
+**Blocking Issues**: 4 critical (P0) gaps prevent production use  
+**Recommended Action**: MVP Sprint (Option A) to get working demo
