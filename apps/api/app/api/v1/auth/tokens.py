@@ -6,9 +6,9 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from datetime import datetime
 
-from app.auth.jwt import create_access_token, verify_token
-from app.auth.models import User
-from app.dependencies import get_db
+from ....auth.jwt import create_access_token, verify_token
+from ....auth.models import User
+from ....auth.dependencies import get_db
 
 router = APIRouter()
 

@@ -7,10 +7,10 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
 
-from app.auth.models import User, UserRole
-from app.auth.password import hash_password, validate_password_strength
-from app.auth.dependencies import get_current_active_user, require_role
-from app.dependencies import get_db
+from ....auth.models import User, UserRole
+from ....auth.password import hash_password, validate_password_strength
+from ....auth.dependencies import get_current_active_user, require_role
+from ....auth.dependencies import get_db
 
 router = APIRouter()
 

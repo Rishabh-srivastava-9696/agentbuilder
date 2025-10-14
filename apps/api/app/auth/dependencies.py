@@ -5,7 +5,7 @@ FastAPI dependencies for authentication and authorization.
 from typing import Optional
 from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import structlog
 
 from ..config import Settings
@@ -21,14 +21,14 @@ settings = Settings()
 security = HTTPBearer()
 
 
-async def get_db() -> AsyncIOMotorClient:
+async def get_db() -> AsyncIOMotorDatabase:
     """Get database connection."""
-    return connection_manager.get_mongodb()
+    return connection_manager.get_mongodb_db()
 
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncIOMotorClient = Depends(get_db)
+    db: AsyncIOMotorDatabase = Depends(get_db)
 ) -> User:
     """
     Get current user from JWT token.
@@ -110,7 +110,7 @@ async def get_current_active_user(
 
 async def get_api_key_user(
     x_api_key: Optional[str] = Header(None),
-    db: AsyncIOMotorClient = Depends(get_db)
+    db: AsyncIOMotorDatabase = Depends(get_db)
 ) -> User:
     """
     Get user from API key.
@@ -205,7 +205,7 @@ async def get_api_key_user(
 async def get_user_from_token_or_api_key(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     x_api_key: Optional[str] = Header(None),
-    db: AsyncIOMotorClient = Depends(get_db)
+    db: AsyncIOMotorDatabase = Depends(get_db)
 ) -> User:
     """
     Get user from either JWT token or API key.

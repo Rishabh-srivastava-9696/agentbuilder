@@ -10,6 +10,10 @@ from fastapi.responses import JSONResponse
 import structlog
 from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from .config import Settings
 from .api.v1 import api_router

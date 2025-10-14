@@ -1,0 +1,22 @@
+{
+  "include": [
+    "app"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    ".venv"
+  ],
+  "extraPaths": [
+    "../../packages/commons/src",
+    "../../packages/memory/src",
+    "../../packages/retrieval/src",
+    "../../packages/llm/src",
+    "../../packages/tracing/src"
+  ],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": true,
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
+}

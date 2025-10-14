@@ -4,7 +4,7 @@ Login endpoint.
 
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import structlog
 
 from ....config import Settings
@@ -19,7 +19,7 @@ from ....auth.models import (
     Token,
     User,
 )
-from ....auth.dependencies import get_db
+from ....auth.dependencies import get_db, get_current_active_user
 
 logger = structlog.get_logger()
 settings = Settings()
@@ -30,7 +30,7 @@ router = APIRouter()
 @router.post("/login", response_model=Token)
 async def login(
     request: LoginRequest,
-    db: AsyncIOMotorClient = Depends(get_db)
+    db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """
     User login endpoint.
@@ -172,7 +172,7 @@ async def login(
 @router.post("/logout")
 async def logout(
     user: User = Depends(get_current_active_user),
-    db: AsyncIOMotorClient = Depends(get_db)
+    db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """
     User logout endpoint.
@@ -209,6 +209,3 @@ async def logout(
         "revoked_tokens": result.modified_count
     }
 
-
-# Import get_current_active_user at the bottom to avoid circular imports
-from ....auth.dependencies import get_current_active_user

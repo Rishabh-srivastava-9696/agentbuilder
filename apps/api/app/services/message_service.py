@@ -85,11 +85,22 @@ class MessageService:
             logger.warning("retrieval_pipeline_init_failed", error=str(e))
             self.retrieval_pipeline = None
         
-        # Initialize LLM provider
+        # Initialize LLM provider (default to OpenAI for now)
+        provider_name = settings.DEFAULT_LLM_PROVIDER or "openai"
+        if provider_name == "openai":
+            api_key = settings.OPENAI_API_KEY
+            model = settings.OPENAI_MODEL
+        elif provider_name == "qwen":
+            api_key = settings.QWEN_API_KEY
+            model = settings.QWEN_MODEL
+        else:
+            api_key = settings.OPENAI_API_KEY
+            model = settings.OPENAI_MODEL
+            
         self.llm_provider = create_provider_from_env(
-            provider_name=settings.MODEL_PROVIDER,
-            api_key=settings.API_KEY,
-            model=settings.MODEL_NAME
+            provider_name=provider_name,
+            api_key=api_key,
+            model=model
         )
         
         logger.info("message_service_initialized", brand_id=self.brand_id)

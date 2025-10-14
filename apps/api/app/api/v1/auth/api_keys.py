@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, timedelta
 
-from app.auth.models import User, UserRole, Permission
-from app.auth.api_keys import generate_api_key, hash_api_key
-from app.auth.dependencies import get_current_active_user, require_permission
-from app.dependencies import get_db
+from ....auth.models import User, UserRole, Permission
+from ....auth.api_keys import generate_api_key, hash_api_key
+from ....auth.dependencies import get_current_active_user, require_permission
+from ....auth.dependencies import get_db
 
 router = APIRouter()
 

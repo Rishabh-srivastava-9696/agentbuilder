@@ -7,9 +7,9 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
-from app.auth.models import User, UserRole
-from app.auth.password import hash_password, validate_password_strength
-from app.dependencies import get_db
+from ....auth.models import User, UserRole
+from ....auth.password import hash_password, validate_password_strength
+from ....auth.dependencies import get_db
 
 router = APIRouter()
 
