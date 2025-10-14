@@ -3,7 +3,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 import uuid
 from datetime import datetime
+import structlog
 
+from app.connections import connection_manager
+
+logger = structlog.get_logger()
 router = APIRouter()
 
 # Pydantic models for request/response
@@ -35,82 +39,132 @@ class Agent(AgentBase):
     class Config:
         from_attributes = True
 
-# In-memory storage for demo (replace with database)
-agents_db = {}
-
 def generate_slug(name: str) -> str:
     """Generate a URL-friendly slug from the agent name."""
     return name.lower().replace(' ', '-').replace('&', 'and')
 
+def get_agents_collection():
+    """Get MongoDB agents collection."""
+    if connection_manager.mongodb_db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    return connection_manager.mongodb_db.agents
+
 @router.get("/", response_model=List[Agent])
 async def list_agents(brand_id: Optional[str] = Query(None)):
     """Get all agents, optionally filtered by brand."""
-    agents = list(agents_db.values())
-    if brand_id:
-        agents = [agent for agent in agents if agent.brand_id == brand_id]
-    return agents
+    try:
+        collection = get_agents_collection()
+        query = {"brand_id": brand_id} if brand_id else {}
+        agents = await collection.find(query).to_list(length=None)
+        return [Agent(**{**agent, "_id": str(agent["_id"])}) for agent in agents]
+    except Exception as e:
+        logger.error("Failed to list agents", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
 
 @router.get("/{agent_id}", response_model=Agent)
 async def get_agent(agent_id: str):
     """Get a specific agent by ID."""
-    if agent_id not in agents_db:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return agents_db[agent_id]
+    try:
+        collection = get_agents_collection()
+        agent = await collection.find_one({"id": agent_id})
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return Agent(**{**agent, "_id": str(agent["_id"])})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get agent", agent_id=agent_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
 
 @router.post("/", response_model=Agent)
 async def create_agent(agent: AgentCreate):
     """Create a new agent."""
-    agent_id = str(uuid.uuid4())
-    slug = generate_slug(agent.name)
-    
-    # Check if slug already exists for this brand
-    for existing_agent in agents_db.values():
-        if existing_agent.brand_id == agent.brand_id and existing_agent.slug == slug:
+    try:
+        collection = get_agents_collection()
+        agent_id = str(uuid.uuid4())
+        slug = generate_slug(agent.name)
+        
+        # Check if slug already exists for this brand
+        existing = await collection.find_one({"brand_id": agent.brand_id, "slug": slug})
+        if existing:
             slug = f"{slug}-{agent_id[:8]}"
-            break
-    
-    now = datetime.utcnow()
-    new_agent = Agent(
-        id=agent_id,
-        brand_id=agent.brand_id,
-        slug=slug,
-        name=agent.name,
-        description=agent.description,
-        system_prompt=agent.system_prompt,
-        configuration=agent.configuration,
-        status="draft",
-        created_at=now,
-        updated_at=now
-    )
-    
-    agents_db[agent_id] = new_agent
-    return new_agent
+        
+        now = datetime.utcnow()
+        agent_doc = {
+            "id": agent_id,
+            "brand_id": agent.brand_id,
+            "slug": slug,
+            "name": agent.name,
+            "description": agent.description,
+            "system_prompt": agent.system_prompt,
+            "configuration": agent.configuration,
+            "status": "draft",
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        await collection.insert_one(agent_doc)
+        logger.info("Agent created", agent_id=agent_id, name=agent.name, brand_id=agent.brand_id)
+        
+        return Agent(**agent_doc)
+    except Exception as e:
+        logger.error("Failed to create agent", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
 @router.put("/{agent_id}", response_model=Agent)
 async def update_agent(agent_id: str, agent_update: AgentUpdate):
     """Update an existing agent."""
-    if agent_id not in agents_db:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    
-    existing_agent = agents_db[agent_id]
-    update_data = agent_update.dict(exclude_unset=True)
-    
-    # Update slug if name changed
-    if "name" in update_data:
-        update_data["slug"] = generate_slug(update_data["name"])
-    
-    update_data["updated_at"] = datetime.utcnow()
-    
-    for field, value in update_data.items():
-        setattr(existing_agent, field, value)
-    
-    return existing_agent
+    try:
+        collection = get_agents_collection()
+        
+        # Check if agent exists
+        existing_agent = await collection.find_one({"id": agent_id})
+        if not existing_agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        update_data = agent_update.dict(exclude_unset=True)
+        
+        # Update slug if name changed
+        if "name" in update_data:
+            update_data["slug"] = generate_slug(update_data["name"])
+        
+        update_data["updated_at"] = datetime.utcnow()
+        
+        # Update in MongoDB
+        await collection.update_one(
+            {"id": agent_id},
+            {"$set": update_data}
+        )
+        
+        # Fetch updated agent
+        updated_agent = await collection.find_one({"id": agent_id})
+        logger.info("Agent updated", agent_id=agent_id)
+        
+        return Agent(**{**updated_agent, "_id": str(updated_agent["_id"])})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update agent", agent_id=agent_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
 
 @router.delete("/{agent_id}")
 async def delete_agent(agent_id: str):
     """Delete an agent."""
-    if agent_id not in agents_db:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    
-    del agents_db[agent_id]
-    return {"message": "Agent deleted successfully"}
+    try:
+        collection = get_agents_collection()
+        
+        # Check if agent exists
+        existing_agent = await collection.find_one({"id": agent_id})
+        if not existing_agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Delete from MongoDB
+        await collection.delete_one({"id": agent_id})
+        logger.info("Agent deleted", agent_id=agent_id)
+        
+        return {"message": "Agent deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete agent", agent_id=agent_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")

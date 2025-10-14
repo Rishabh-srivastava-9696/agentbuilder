@@ -50,6 +50,25 @@ async def lifespan(app: FastAPI):
     await connection_manager.connect_mongodb()
     await connection_manager.connect_redis()
     
+    # Setup MongoDB indexes for admin collections
+    if connection_manager.mongodb_db is not None:
+        try:
+            logger.info("Setting up MongoDB indexes...")
+            db = connection_manager.mongodb_db
+            
+            # Brand indexes
+            await db.brands.create_index("id", unique=True)
+            await db.brands.create_index("slug", unique=True)
+            
+            # Agent indexes
+            await db.agents.create_index("id", unique=True)
+            await db.agents.create_index("brand_id")
+            await db.agents.create_index([("brand_id", 1), ("slug", 1)], unique=True)
+            
+            logger.info("MongoDB indexes created successfully")
+        except Exception as e:
+            logger.warning("Failed to create MongoDB indexes", error=str(e))
+    
     # Check connection health
     health = await connection_manager.health_check()
     logger.info("Connection health check", **health)
