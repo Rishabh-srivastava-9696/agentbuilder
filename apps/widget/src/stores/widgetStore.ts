@@ -3,6 +3,7 @@ import type { WidgetState, Message, WidgetConfig } from '../types';
 
 interface WidgetStore extends WidgetState {
   config: WidgetConfig | null;
+  isExpanded: boolean;
   
   // Actions
   setConfig: (config: WidgetConfig) => void;
@@ -13,9 +14,12 @@ interface WidgetStore extends WidgetState {
   setTyping: (isTyping: boolean) => void;
   setIsTyping: (isTyping: boolean) => void;
   addMessage: (message: Message) => void;
+  updateMessage: (id: string, updates: Partial<Message>) => void;
   updateLastMessage: (content: string) => void;
   setConversationId: (id: string) => void;
   setError: (error: string | null) => void;
+  setExpanded: (isExpanded: boolean) => void;
+  toggleExpanded: () => void;
   clearMessages: () => void;
   reset: () => void;
 }
@@ -32,6 +36,7 @@ const initialState: WidgetState = {
 export const useWidgetStore = create<WidgetStore>((set, get) => ({
   ...initialState,
   config: null,
+  isExpanded: false,
 
   setConfig: (config: WidgetConfig) => {
     set({ config });
@@ -69,6 +74,17 @@ export const useWidgetStore = create<WidgetStore>((set, get) => ({
     messages: [...state.messages, message]
   })),
   
+  updateMessage: (id: string, updates: Partial<Message>) => {
+    console.log('[Store] updateMessage called:', { id, updates, currentMessages: get().messages.length });
+    set((state) => {
+      const updatedMessages = state.messages.map(msg => 
+        msg.id === id ? { ...msg, ...updates } : msg
+      );
+      console.log('[Store] Messages updated:', updatedMessages.find(m => m.id === id));
+      return { messages: updatedMessages };
+    });
+  },
+  
   updateLastMessage: (content: string) => set((state) => {
     const messages = [...state.messages];
     const lastMessage = messages[messages.length - 1];
@@ -83,6 +99,10 @@ export const useWidgetStore = create<WidgetStore>((set, get) => ({
   setConversationId: (conversationId: string) => set({ conversationId }),
   
   setError: (error: string | null) => set({ error: error || undefined }),
+  
+  setExpanded: (isExpanded: boolean) => set({ isExpanded }),
+  
+  toggleExpanded: () => set((state) => ({ isExpanded: !state.isExpanded })),
   
   clearMessages: () => set({ messages: [], conversationId: undefined }),
   

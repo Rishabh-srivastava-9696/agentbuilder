@@ -2,9 +2,6 @@ import type { Message, StreamingMessage, PageContext, APIError } from '../types'
 
 export class APIClient {
   private baseUrl: string;
-  private eventSource: EventSource | null = null;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 3;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -37,6 +34,7 @@ export class APIClient {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async sendDirectMessage(requestBody: any): Promise<Message> {
     const response = await fetch(`${this.baseUrl}/api/v1/messages/`, {
       method: 'POST',
@@ -55,77 +53,130 @@ export class APIClient {
   }
 
   private async streamMessage(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     requestBody: any,
     onStream: (chunk: StreamingMessage) => void
   ): Promise<Message> {
+    console.log('[APIClient] Starting stream with body:', requestBody);
+    
     return new Promise((resolve, reject) => {
-      const params = new URLSearchParams({
-        message: requestBody.message,
-        user_id: requestBody.user_id,
-        conversation_id: requestBody.conversation_id || '',
-        page_context: JSON.stringify(requestBody.page_context || {}),
-      });
-
-      const eventSourceUrl = 
-        `${this.baseUrl}/api/v1/messages/stream?` +
-        params.toString();
-
-      this.eventSource = new EventSource(eventSourceUrl);
-      let fullMessage = '';
-      let messageData: Partial<Message> = {};
-
-      this.eventSource.onmessage = (event) => {
-        try {
-          const chunk: StreamingMessage = JSON.parse(event.data);
-          
-          if (chunk.type === 'content') {
-            fullMessage += chunk.content || '';
-            onStream(chunk);
-          } else if (chunk.type === 'metadata') {
-            messageData = { ...messageData, ...chunk.data };
-          } else if (chunk.type === 'complete') {
-            this.eventSource?.close();
-            this.eventSource = null;
-            
-            const finalMessage: Message = {
-              id: messageData.id || Date.now().toString(),
-              content: fullMessage,
-              role: 'assistant',
-              timestamp: new Date(),
-              citations: messageData.citations,
-            };
-            
-            resolve(finalMessage);
-          } else if (chunk.type === 'error') {
-            this.eventSource?.close();
-            this.eventSource = null;
-            reject(new Error(chunk.error || 'Streaming error'));
-          }
-        } catch (error) {
-          console.error('Error parsing stream chunk:', error);
-        }
-      };
-
-      this.eventSource.onerror = (error) => {
-        console.error('EventSource error:', error);
-        this.eventSource?.close();
-        this.eventSource = null;
+      // Use fetch API for POST streaming (EventSource doesn't support POST)
+      fetch(`${this.baseUrl}/api/v1/messages/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+        },
+        body: JSON.stringify(requestBody),
+      }).then(async (response) => {
+        console.log('[APIClient] Stream response received:', response.status, response.statusText);
         
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.reconnectAttempts++;
-          setTimeout(() => {
-            this.streamMessage(requestBody, onStream)
-              .then(resolve)
-              .catch(reject);
-          }, 1000 * this.reconnectAttempts);
-        } else {
-          reject(new Error('Failed to connect to streaming endpoint'));
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-      };
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        
+        if (!reader) {
+          throw new Error('No response body');
+        }
+
+        let fullMessage = '';
+        const messageData: Partial<Message> = {};
+        let buffer = '';
+
+        try {
+          console.log('[APIClient] Starting to read stream...');
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              console.log('[APIClient] Stream complete');
+              break;
+            }
+
+            // Decode and append to buffer
+            const chunk = decoder.decode(value, { stream: true });
+            console.log('[APIClient] Received chunk:', chunk);
+            console.log('[APIClient] Buffer before split:', buffer.length, 'chars');
+            buffer += chunk;
+            console.log('[APIClient] Buffer after append:', buffer.length, 'chars');
+            
+            // Process complete SSE messages (separated by \n\n)
+            const lines = buffer.split('\n\n');
+            console.log('[APIClient] Split into', lines.length, 'lines');
+            buffer = lines.pop() || ''; // Keep incomplete message in buffer
+            console.log('[APIClient] Lines to process:', lines.length);
+
+            for (const line of lines) {
+              console.log('[APIClient] Processing line:', line.substring(0, 100));
+              // Skip empty lines
+              if (!line.trim()) {
+                console.log('[APIClient] Skipping empty line');
+                continue;
+              }
+              
+              // SSE format is "data: <json>"
+              if (!line.startsWith('data: ')) {
+                console.warn('[APIClient] Unexpected line format:', line);
+                continue;
+              }
+
+              try {
+                const data = line.substring(6).trim(); // Remove 'data: ' prefix and trim
+                
+                // Skip empty data lines
+                if (!data) {
+                  console.log('[APIClient] Skipping empty data');
+                  continue;
+                }
+                
+                console.log('[APIClient] Parsing SSE data:', data);
+                const chunk: StreamingMessage = JSON.parse(data);
+                console.log('[APIClient] Parsed chunk:', chunk);
+                
+                if (chunk.type === 'content') {
+                  fullMessage += chunk.content || '';
+                  onStream(chunk);
+                } else if (chunk.type === 'status') {
+                  onStream(chunk);
+                } else if (chunk.type === 'metadata') {
+                  // Store metadata (citations, etc.)
+                  if (chunk.citations) {
+                    messageData.citations = chunk.citations;
+                  }
+                } else if (chunk.type === 'error') {
+                  reject(new Error(chunk.content || 'Streaming error'));
+                  return;
+                }
+              } catch (parseError) {
+                console.error('[APIClient] Error parsing stream chunk:', parseError, 'Data:', line);
+              }
+            }
+          }
+
+          // If we exit the loop without a 'complete' message, resolve with what we have
+          const finalMessage: Message = {
+            id: messageData.id || Date.now().toString(),
+            content: fullMessage,
+            role: 'assistant',
+            timestamp: new Date(),
+            citations: messageData.citations,
+          };
+          
+          console.log('[APIClient] Resolving with final message:', finalMessage);
+          resolve(finalMessage);
+        } catch (error) {
+          console.error('[APIClient] Stream reading error:', error);
+          reject(error);
+        }
+      }).catch(reject);
     });
   }
 
-  private formatMessage(data: any): Message {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private formatMessage(data: Record<string, any>): Message {
     return {
       id: data.id || Date.now().toString(),
       content: data.content || data.message || '',
@@ -150,27 +201,17 @@ export class APIClient {
     }
   }
 
-  disconnect(): void {
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
-    this.reconnectAttempts = 0;
-  }
-
   private handleError(error: unknown): APIError {
     if (error instanceof Error) {
       return {
         message: error.message,
         status: 500,
-        timestamp: new Date().toISOString(),
       };
     }
     
     return {
       message: 'An unknown error occurred',
       status: 500,
-      timestamp: new Date().toISOString(),
     };
   }
 }

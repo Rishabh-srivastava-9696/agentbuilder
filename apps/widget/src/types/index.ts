@@ -49,6 +49,7 @@ export interface StreamingMessage {
   citations?: Citation[];
   context_used?: number;
   confidence_score?: number;
+  timestamp?: string;
 }
 
 export interface WidgetState {

@@ -42,12 +42,24 @@ async def stream_message(
     async def generate_stream():
         try:
             async for chunk in message_service.stream_message(request):
-                yield f"data: {json.dumps(chunk.dict())}\n\n"
+                # Manual SSE formatting: "data: <json>\n\n"
+                data = f"data: {chunk.model_dump_json()}\n\n"
+                yield data
+                # Small delay to ensure proper streaming and prevent buffering
+                await asyncio.sleep(0.01)
         except Exception as e:
             logger.error("Error streaming message", error=str(e))
-            yield f"data: {json.dumps({'error': 'Stream error'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
     
-    return EventSourceResponse(generate_stream())
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 @router.websocket("/ws")

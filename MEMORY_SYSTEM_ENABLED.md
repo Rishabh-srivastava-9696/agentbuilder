@@ -37,7 +37,7 @@ The widget was **"forgetful"** because it wasn't sending persistent identifiers 
 
 ### Method 1: Use the Widget (Recommended)
 
-1. **Open widget** at http://localhost:5173 (or 5174)
+1. **Open widget** at http://localhost:5173
 2. **Clear browser data** to start fresh (or use incognito)
 3. **Send these messages in order:**
 

@@ -40,25 +40,27 @@ class PageBoost:
             boost_multiplier = 1.0
             boost_reasons = []
             
-            # SKU match boost
-            if page_context.sku and chunk.metadata.get("sku") == page_context.sku:
+            # SKU match boost - check if page_context has sku attribute
+            if hasattr(page_context, 'sku') and page_context.sku and chunk.metadata.get("sku") == page_context.sku:
                 boost_multiplier *= 1.5
                 boost_reasons.append("sku_match")
             
-            # Category match boost
-            if page_context.category and chunk.metadata.get("category") == page_context.category:
+            # Category match boost - check if page_context has category attribute
+            if hasattr(page_context, 'category') and page_context.category and chunk.metadata.get("category") == page_context.category:
                 boost_multiplier *= 1.3
                 boost_reasons.append("category_match")
             
-            # URL path similarity boost
-            if page_context.path and chunk.url:
-                if page_context.path in chunk.url or chunk.url in page_context.path:
+            # URL path similarity boost - check if page_context has path attribute
+            page_path = getattr(page_context, 'path', None)
+            if page_path and chunk.url:
+                if page_path in chunk.url or chunk.url in page_path:
                     boost_multiplier *= 1.2
                     boost_reasons.append("url_similarity")
             
             # Page type boost (e.g., FAQ page prioritizes FAQ content)
-            if page_context.meta.get("page_type"):
-                page_type = page_context.meta["page_type"]
+            page_meta = getattr(page_context, 'meta', {})
+            if page_meta and page_meta.get("page_type"):
+                page_type = page_meta["page_type"]
                 content_type = chunk.metadata.get("content_type")
                 if page_type == content_type:
                     boost_multiplier *= 1.25

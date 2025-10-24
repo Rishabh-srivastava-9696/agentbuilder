@@ -288,11 +288,19 @@ class MessageService:
         
         Same flow as process_message but with streaming response generation.
         """
+        logger.info("stream_message_called", message=request.message[:50])
         try:
             start_time = datetime.now(timezone.utc)
             
+            # Load agent configuration from request
+            agent_id = request.agent_id or self.brand_id
+            await self._load_agent_config(agent_id)
+            logger.info("agent_config_loaded", agent_id=agent_id, has_system_prompt=bool(self.system_prompt))
+            
             # Ensure memory initialized
+            logger.info("ensuring_memory_initialized")
             await self._ensure_memory_initialized()
+            logger.info("memory_initialized")
             
             # Generate conversation ID if not provided
             conversation_id = request.conversation_id or str(uuid.uuid4())
@@ -320,9 +328,9 @@ class MessageService:
             if self.memory_config.ENABLE_GRAPH_RULES:
                 escalations = await self.graph.check_escalation(request.message)
                 if escalations:
-                    # Send escalation warning
+                    # Send escalation warning as status
                     yield StreamingMessageResponse(
-                        type="warning",
+                        type="status",
                         content=f"Safety escalation: {escalations[0].severity}",
                         conversation_id=conversation_id
                     )

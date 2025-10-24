@@ -74,6 +74,7 @@ class OpenAIProvider(LLMProvider):
         messages.append({"role": "user", "content": prompt})
         
         try:
+            logger.info("openai_stream_starting", model=self.config.model)
             stream = await self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
@@ -83,9 +84,15 @@ class OpenAIProvider(LLMProvider):
                 **kwargs
             )
             
+            chunk_count = 0
             async for chunk in stream:
                 if chunk.choices[0].delta.content:
-                    yield LLMResponse(content=chunk.choices[0].delta.content)
+                    chunk_count += 1
+                    content = chunk.choices[0].delta.content
+                    logger.debug("openai_chunk_received", chunk_num=chunk_count, content_len=len(content))
+                    yield LLMResponse(content=content)
+            
+            logger.info("openai_stream_complete", total_chunks=chunk_count)
                     
         except Exception as e:
             logger.error("openai_streaming_error", error=str(e))

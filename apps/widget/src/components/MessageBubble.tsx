@@ -8,6 +8,13 @@ interface MessageBubbleProps {
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
   const isUser = message.role === 'user';
   
+  console.log('[MessageBubble] Rendering message:', {
+    id: message.id,
+    role: message.role,
+    contentLength: message.content.length,
+    content: message.content.substring(0, 50) + (message.content.length > 50 ? '...' : '')
+  });
+  
   return (
     <div className={`message-bubble ${isUser ? 'user' : 'assistant'}`}>
       <div className={`message-content ${isUser ? 'user-message' : 'assistant-message'}`}>

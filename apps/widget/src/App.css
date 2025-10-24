@@ -28,16 +28,9 @@
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
 }
 
-/* Widget Overlay */
+/* Widget Overlay - Base styles (positioning handled by responsive.css) */
 .widget-overlay {
-  position: absolute;
-  bottom: 80px;
-  right: 0;
-  width: 380px;
-  height: 500px;
   background: white;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
   border: 1px solid #e5e7eb;
   overflow: hidden;
   animation: slideUp 0.3s ease-out;
@@ -77,19 +70,7 @@
   color: #111827;
 }
 
-.chat-header button {
-  background: none;
-  border: none;
-  font-size: 20px;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  transition: background-color 0.2s;
-}
-
-.chat-header button:hover {
-  background: #e5e7eb;
-}
+/* Header button styles moved to responsive.css for expand/close buttons */
 
 /* Messages Area */
 .chat-messages {
@@ -289,12 +270,4 @@
   cursor: not-allowed;
 }
 
-/* Responsive Design */
-@media (max-width: 480px) {
-  .widget-overlay {
-    width: calc(100vw - 40px);
-    height: calc(100vh - 120px);
-    bottom: 80px;
-    right: 20px;
-  }
-}
+/* Responsive Design - Handled by responsive.css */
