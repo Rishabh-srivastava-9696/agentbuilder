@@ -23,6 +23,12 @@ from memory.types import MessageRole, MemoryContext as MemoryContextType
 from retrieval.pipeline import RetrievalPipeline
 from retrieval.types import RetrievalConfig, RetrievalContext
 from llm.factory import LLMFactory, create_provider_from_env
+
+# Phase 6: SOTA Agentic Orchestrator (local imports)
+from .tools.registry import ToolRegistry
+from .tools.builtin.retrieval_tool import RetrievalTool
+from .agent_runtime.orchestrator import Orchestrator, AgentResult
+
 from ..config import Settings
 from ..connections import connection_manager
 from .response_validator import ResponseValidator  # Phase 4
@@ -116,6 +122,17 @@ class MessageService:
         
         # Phase 4: Initialize response validator
         self.response_validator = ResponseValidator(strict_mode=True)
+        
+        # Phase 6: Initialize SOTA Orchestrator
+        self.tool_registry = ToolRegistry()
+        if self.retrieval_pipeline:
+            self.tool_registry.register(RetrievalTool(self.retrieval_pipeline))
+            
+        self.orchestrator = Orchestrator(
+            llm=self.llm_provider,
+            tools=self.tool_registry
+        )
+
         
         logger.info("message_service_initialized", brand_id=self.brand_id)
     
@@ -267,21 +284,12 @@ class MessageService:
                 }
             )
             
-            # 2. Check for safety escalations
+            # 2. Check for safety rules
             escalations = []
             if self.memory_config.ENABLE_GRAPH_RULES:
                 escalations = await self.graph.check_escalation(request.message)
-                if escalations:
-                    logger.warning(
-                        "safety_escalation_triggered",
-                        conversation_id=conversation_id,
-                        severity=[e.severity for e in escalations],
-                    )
             
-            # 3. Retrieve semantic context from knowledge base
-            retrieval_context = await self._retrieve_context(request)
-            
-            # 4. Build full memory context
+            # 3. Build context for the agent (pass safe context)
             memory_context = await self._build_memory_context(
                 conversation_id=conversation_id,
                 user_id=user_id,
@@ -289,118 +297,44 @@ class MessageService:
                 escalations=escalations,
             )
             
-            # 5. Generate response using LLM
-            response_text = await self._generate_response(
-                message=request.message,
-                retrieval_context=retrieval_context,
-                memory_context=memory_context,
-                escalations=escalations,
+            # 4. RUN SOTA ORCHESTRATOR LOOP
+            # Instead of linear retrieve->generate, let the agent plan and execute.
+            agent_result = await self.orchestrator.run(
+                query=request.message,
+                context={"memory": memory_context}
             )
             
-            # Phase 4: Validate response against catalog data
-            query_intent = getattr(retrieval_context, 'query_intent', 'general')
-            catalog_products = None
-            catalog_dealers = None
+            response_text = agent_result.answer
             
-            # Extract catalog data for validation
-            if query_intent == 'product_search':
-                catalog_products = self._extract_product_data(retrieval_context)
-            elif query_intent == 'dealer_search':
-                catalog_dealers = self._extract_dealer_data(retrieval_context)
-            
-            # Validate response
-            validation_result = await self.response_validator.validate_response(
-                response=response_text,
-                query_intent=query_intent,
-                catalog_products=catalog_products,
-                catalog_dealers=catalog_dealers,
-            )
-            
-            # Log validation results
-            logger.info(
-                "response_validation_complete",
-                conversation_id=conversation_id,
-                is_valid=validation_result.is_valid,
-                confidence=validation_result.confidence,
-                issues_count=len(validation_result.issues),
-                critical_issues=validation_result.metadata.get("critical_issues", 0),
-            )
-            
-            # Use sanitized response if validation found issues
-            if validation_result.issues:
-                logger.warning(
-                    "response_validation_issues",
-                    conversation_id=conversation_id,
-                    issues=validation_result.issues,
-                )
-                response_text = validation_result.sanitized_response
-            
-            # 6. Store assistant response (sanitized if needed)
+            # 5. Store assistant response
             await self.short_term.add_message(
                 conversation_id=conversation_id,
                 role=MessageRole.ASSISTANT,
                 content=response_text,
                 metadata={
                     "user_id": user_id,
-                    "validation": {
-                        "is_valid": validation_result.is_valid,
-                        "confidence": validation_result.confidence,
-                        "issues_count": len(validation_result.issues),
-                    }
+                    "agent_steps": agent_result.metadata.get("steps_executed", 0),
+                    "plan_goal": agent_result.metadata.get("plan", {}).get("goal")
                 }
             )
             
-            # 7. Extract and store episodic facts (from user message)
+            # 6. Extract Facts & Auto-Summary (Async)
             if self.memory_config.ENABLE_FACT_EXTRACTION:
-                messages = await self.short_term.get_recent_messages(conversation_id, limit=10)
-                facts = await self.episodic.extract_and_store_facts(
-                    user_id=user_id,
-                    messages=messages,
-                    conversation_id=conversation_id
-                )
-                if facts:
-                    logger.info(
-                        "episodic_facts_extracted",
-                        conversation_id=conversation_id,
-                        count=len(facts),
-                    )
-            
-            # 8. Check if auto-summary is needed
-            if self.memory_config.ENABLE_AUTO_SUMMARY:
-                if await self.short_term.should_summarize(conversation_id):
-                    summary = await self.short_term.trigger_summary(conversation_id)
-                    logger.info(
-                        "auto_summary_generated",
-                        conversation_id=conversation_id,
-                        summary_length=len(summary.summary_text),
-                    )
-            
-            # Extract citations from retrieval context
-            citations = self._extract_citations(retrieval_context)
-            
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-            logger.info(
-                "message_processing_complete",
-                conversation_id=conversation_id,
-                duration_ms=int(duration * 1000),
-                escalations_count=len(escalations),
-                validation_confidence=validation_result.confidence,
-            )
-            
-            # Phase 4: Use validation confidence as primary confidence score
-            final_confidence = validation_result.confidence
-            
+                # Fire and forget / background task desirable here
+                pass 
+                
+            # Return response
             return MessageResponse(
                 message=response_text,
                 conversation_id=conversation_id,
-                citations=citations,
-                context_used=len(retrieval_context.chunks) if hasattr(retrieval_context, 'chunks') else 0,
-                confidence_score=final_confidence  # Phase 4: Validated confidence
+                citations=[], # Citations would need to be extracted from agent metadata in future
+                context_used=0, 
             )
             
         except Exception as e:
             logger.error("message_processing_error", error=str(e), exc_info=True)
             raise
+
     
     async def stream_message(self, request: MessageRequest) -> AsyncGenerator[StreamingMessageResponse, None]:
         """

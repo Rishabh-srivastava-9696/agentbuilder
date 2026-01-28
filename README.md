@@ -53,6 +53,12 @@ The **Agent Builder Platform** empowers businesses to create intelligent AI agen
 - **Semantic**: Brand knowledge base with versioning
 - **Graph**: Rules, policies, and escalation logic
 
+### 🤖 SOTA Agentic Runtime (New)
+- **Orchestrator Pattern**: Plan-and-Execute loop for complex reasoning
+- **Internal Reasoning**: Reasoning steps (Thought -> Plan -> Execute)
+- **Tooling Layer**: Standardized tool interface (MCP-inspired)
+- **Self-Correction**: Critic loop to validate and fix responses
+
 ### 🔌 LLM Support
 - **OpenAI**: GPT-4, GPT-4 Turbo, GPT-3.5 Turbo
 - **Qwen**: Qwen-max, Qwen-plus
@@ -172,6 +178,16 @@ agent-builder/
 │   │       ├── openai_adapter.py     # OpenAI GPT
 │   │       ├── qwen_adapter.py       # Qwen models
 │   │       └── factory.py            # Provider factory
+│   │
+│   ├── tools/                        # Agent Tools (MCP Standard)
+│   │   └── src/tools/
+│   │       ├── registry.py           # Tool registry
+│   │       ├── types.py              # Base tool interfaces
+│   │       └── builtin/              # Built-in tools (Retrieval, etc.)
+│   │
+│   ├── agent_runtime/                # SOTA Orchestrator
+│   │   └── src/agent_runtime/
+│   │       └── orchestrator.py       # Plan-Execute-Review loop
 │   │
 │   └── commons/                      # Shared Utilities
 │       └── src/commons/
