@@ -221,8 +221,10 @@ agent-builder/
 - **MongoDB Atlas** account (free tier works)
 - **Redis** (optional, for caching)
 - **API Keys**:
+  - Azure Key Vault access
   - Voyage AI (for embeddings)
   - OpenAI or Qwen (for LLM)
+- **Azure CLI**: Logged in via `az login`
 
 ### 1. Clone Repository
 
@@ -233,31 +235,32 @@ cd agent-builder
 
 ### 2. Environment Setup
 
-Create `.env` file in the root:
+The platform uses a consolidated environment management system with **Azure Key Vault** for secrets.
 
-```bash
-# MongoDB Atlas
-MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/
-MONGODB_DATABASE=agent-builder
+1. **Login to Azure**:
+   ```bash
+   az login
+   ```
 
-# Voyage AI Embeddings
-VOYAGE_API_KEY=your-voyage-api-key
+2. **Root `.env`**: Create a `.env` file in the root for non-sensitive configuration:
+   ```bash
+   # Azure Configuration
+   USE_AZURE_KEYVAULT=true
+   AZURE_KEYVAULT_NAME=kv-agentbuilder-dev
 
-# LLM Provider (choose one or more)
-OPENAI_API_KEY=your-openai-key
-QWEN_API_KEY=your-qwen-key
+   # API Settings
+   API_HOST=0.0.0.0
+   API_PORT=8000
+   API_LOG_LEVEL=info
 
-# Redis (optional)
-REDIS_URL=redis://localhost:6379
+   # CORS (comma-separated)
+   CORS_ALLOW_ORIGINS=http://localhost:3000,http://localhost:5173
+   ```
 
-# API Settings
-API_HOST=0.0.0.0
-API_PORT=8000
-API_LOG_LEVEL=info
-
-# CORS (comma-separated)
-CORS_ALLOW_ORIGINS=http://localhost:3000,http://localhost:5173
-```
+3. **Sync JS Apps**: Run the sync script to generate local config for Admin/Widget (no secrets downloaded):
+   ```bash
+   python scripts/sync_secrets.py
+   ```
 
 ### 3. MongoDB Atlas Setup
 
@@ -522,18 +525,16 @@ features:
 
 ### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `MONGODB_URI` | ✅ Yes | - | MongoDB Atlas connection string |
-| `MONGODB_DATABASE` | No | `agent-builder` | Database name |
-| `VOYAGE_API_KEY` | ✅ Yes | - | Voyage AI API key for embeddings |
-| `OPENAI_API_KEY` | Conditional | - | OpenAI API key (if using GPT) |
-| `QWEN_API_KEY` | Conditional | - | Qwen API key (if using Qwen) |
-| `REDIS_URL` | No | `redis://localhost:6379` | Redis connection URL |
-| `API_HOST` | No | `0.0.0.0` | API server host |
-| `API_PORT` | No | `8000` | API server port |
-| `API_LOG_LEVEL` | No | `info` | Logging level |
-| `CORS_ALLOW_ORIGINS` | No | `*` | Comma-separated origins |
+| Variable | Location | Required | Description |
+|----------|----------|----------|-------------|
+| `AZURE_KEYVAULT_NAME` | Root `.env` | ✅ Yes | Name of your Azure Key Vault |
+| `USE_AZURE_KEYVAULT` | Root `.env` | ✅ Yes | Set to `true` to enable AKV |
+| `MONGODB_URI` | **AKV** | ✅ Yes | MongoDB Atlas connection string |
+| `OPENAI_API_KEY` | **AKV** | Conditional | OpenAI API key |
+| `VOYAGE_API_KEY` | **AKV** | ✅ Yes | Voyage AI API key |
+| `SECRET_KEY` | **AKV** | ✅ Yes | Django-style secret key |
+| `API_PORT` | Root `.env` | No | API server port (default 8000) |
+| `LOG_LEVEL` | Root `.env` | No | Logging level |
 
 ---
 

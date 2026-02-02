@@ -110,11 +110,7 @@ bash start.sh
 
 If you see "Unauthorized" errors in the API logs:
 
-**Current Fix:** The system uses `agent-builder` as the system database (configured in `apps/api/.env`):
-
-```bash
-MONGO_SYSTEM_DB=agent-builder
-```
+**Current Fix:** The system uses `agent-builder` as the system database (configured in the root `.env`):
 
 **Permanent Fix:** Update MongoDB Atlas user permissions to access all databases.
 
