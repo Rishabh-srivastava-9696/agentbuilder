@@ -624,9 +624,18 @@ python scripts/test_document_ingestion.py
 
 ## 🔐 Security
 
-### Authentication
-- **JWT Tokens**: Stateless authentication
-- **API Keys**: Per-agent access control
+### 1. Configure Authentication (Choose One)
+
+**Option A: Interactive Login (Recommended for Local Dev)**
+```bash
+az login
+```
+
+**Option B: Service Principal (Env Variables)**
+Set the following in your root `.env` file:
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_TENANT_ID`
 - **RBAC**: Role-based permissions (planned)
 
 ### Data Protection
