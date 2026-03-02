@@ -55,7 +55,7 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
                 WebSocket Support
               </label>
               <p className="text-xs text-gray-500">
-                Enable real-time communication for instant responses
+                Use WebSocket for real-time streaming (recommended). Uncheck to fall back to SSE.
               </p>
             </div>
             <input

@@ -4,12 +4,15 @@ import { ChatWindow } from './components/ChatWindow';
 import { useWidgetStore } from './stores/widgetStore';
 import { useFullscreen } from './hooks/useFullscreen';
 import { APIClient } from './utils/apiClient';
+import { WebSocketClient } from './utils/wsClient';
+import { buildBrandTheme } from './utils/brandTheme';
 import { extractPageContext } from './utils/pageContext';
 import type { WidgetConfig } from './types';
 import './App.css';
 import './styles/responsive.css';
 
 const apiClient = new APIClient('http://localhost:8000');
+const wsClient = new WebSocketClient('http://localhost:8000');
 
 interface AppProps {
   config?: WidgetConfig;
@@ -28,18 +31,17 @@ function App({ config }: AppProps) {
     setIsTyping,
     setConfig,
     setConversationId,
-    setExpanded
+    setExpanded,
+    setBrandTheme,
   } = useWidgetStore();
 
-  // Fullscreen hook for expand/collapse functionality
   const { isExpanded: isFullscreen, toggleExpanded, isMobile } = useFullscreen();
 
-  // Sync fullscreen state with store
   React.useEffect(() => {
     setExpanded(isFullscreen);
   }, [isFullscreen, setExpanded]);
 
-  // Generate persistent user_id and conversation_id
+  // Persistent user_id
   const [userId] = React.useState(() => {
     const stored = localStorage.getItem('agent_widget_user_id');
     if (stored) return stored;
@@ -48,64 +50,64 @@ function App({ config }: AppProps) {
     return newId;
   });
 
-  // Fetch agent ID dynamically from URL or config
   const [agentId, setAgentId] = React.useState<string | null>(null);
+  const [useWebSocket, setUseWebSocket] = React.useState(true);
 
+  // ── Resolve agent ID ──────────────────────────────────────────
   React.useEffect(() => {
-    // Priority: URL query param > config.agentId > data-agent-id attribute > fetch from API
-    
-    // 1. Check URL query parameter (highest priority)
     const urlParams = new URLSearchParams(window.location.search);
     const urlAgentId = urlParams.get('agent_id');
-    if (urlAgentId) {
-      setAgentId(urlAgentId);
-      console.log('[Widget] Using agent ID from URL:', urlAgentId);
-      return;
-    }
-
-    // 2. Check config prop
-    if (config?.agentId) {
-      setAgentId(config.agentId);
-      console.log('[Widget] Using agent ID from config:', config.agentId);
-      return;
-    }
-
-    // 3. Check for data-agent-id attribute on script tag
+    if (urlAgentId) { setAgentId(urlAgentId); return; }
+    if (config?.agentId) { setAgentId(config.agentId); return; }
     const scriptTag = document.querySelector('script[data-agent-id]') as HTMLScriptElement;
-    if (scriptTag?.dataset.agentId) {
-      setAgentId(scriptTag.dataset.agentId);
-      console.log('[Widget] Using agent ID from data attribute:', scriptTag.dataset.agentId);
-      return;
-    }
+    if (scriptTag?.dataset.agentId) { setAgentId(scriptTag.dataset.agentId); return; }
 
-    // 4. Fallback: Fetch first available agent from API
-    const fetchAgent = async () => {
+    // Fallback: first available agent
+    fetch('http://localhost:8000/api/v1/admin/agents/')
+      .then(r => r.ok ? r.json() : [])
+      .then(agents => { if (agents.length > 0) setAgentId(agents[0].id); })
+      .catch(() => {});
+  }, [config?.agentId]);
+
+  // ── Fetch brand theme once agent ID is known ──────────────────
+  React.useEffect(() => {
+    if (!agentId) return;
+
+    const fetchBrandTheme = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/v1/admin/agents/');
-        if (response.ok) {
-          const agents = await response.json();
-          if (agents.length > 0) {
-            setAgentId(agents[0].id);
-            console.log('[Widget] Using first available agent:', agents[0].name, agents[0].id);
-          } else {
-            console.error('[Widget] No agents found in database');
-          }
-        }
-      } catch (error) {
-        console.error('[Widget] Failed to fetch agent:', error);
+        // 1. Get agent → extract brand_id
+        const agentRes = await fetch(`http://localhost:8000/api/v1/admin/agents/${agentId}`);
+        if (!agentRes.ok) return;
+        const agent = await agentRes.json();
+        const brandId: string | undefined = agent.brand_id;
+        // Read WebSocket setting from agent config (default true if not set)
+        const wsEnabled = agent.configuration?.features?.websockets !== false;
+        setUseWebSocket(wsEnabled);
+        if (!brandId) return;
+
+        // 2. Get brand → extract colors / identity
+        const brandRes = await fetch(`http://localhost:8000/api/v1/admin/brands/${brandId}`);
+        if (!brandRes.ok) return;
+        const brand = await brandRes.json();
+
+        const theme = buildBrandTheme(brand.name || 'AI', brand.colors || {});
+        setBrandTheme(theme);
+
+        // Persist agent_id for MessageBubble product fetches
+        localStorage.setItem('agent_widget_agent_id', agentId);
+      } catch {
+        // Non-fatal: widget renders with default styling
       }
     };
 
-    fetchAgent();
-  }, [config?.agentId]);
+    fetchBrandTheme();
+  }, [agentId, setBrandTheme]);
 
   React.useEffect(() => {
-    if (config) {
-      setConfig(config);
-    }
+    if (config) setConfig(config);
   }, [config, setConfig]);
 
-  // Initialize conversation_id when widget first opens
+  // ── Initialize conversation ID ────────────────────────────────
   React.useEffect(() => {
     if (isOpen && !conversationId) {
       const stored = sessionStorage.getItem('agent_widget_conversation_id');
@@ -119,101 +121,60 @@ function App({ config }: AppProps) {
     }
   }, [isOpen, conversationId, setConversationId]);
 
-  const handleToggleWidget = () => {
-    setIsOpen(!isOpen);
-  };
+  const handleToggleWidget = () => setIsOpen(!isOpen);
 
   const handleSendMessage = async (text: string) => {
-    // Check if agent is loaded
     if (!agentId) {
-      console.error('[Widget] Agent ID not available yet');
       addMessage({
         id: Date.now().toString(),
         content: 'Agent is still loading, please wait...',
         role: 'assistant',
-        timestamp: new Date()
+        timestamp: new Date(),
       });
       return;
     }
 
-    // Add user message
-    addMessage({
-      id: Date.now().toString(),
-      content: text,
-      role: 'user',
-      timestamp: new Date()
-    });
-
-    // Set typing indicator
+    addMessage({ id: Date.now().toString(), content: text, role: 'user', timestamp: new Date() });
     setIsTyping(true);
 
     try {
-      // Extract page context
       const context = extractPageContext();
-      
-      // Use conversation ID from store (or create new one)
       const currentConvId = conversationId || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       if (!conversationId) {
         setConversationId(currentConvId);
         sessionStorage.setItem('agent_widget_conversation_id', currentConvId);
       }
-      
-      // Create placeholder message for streaming
+
       const assistantMessageId = (Date.now() + 1).toString();
-      let streamedContent = '';  // Track streamed content
-      
-      console.log('[App] Adding placeholder message:', assistantMessageId);
-      
-      addMessage({
-        id: assistantMessageId,
-        content: '',
-        role: 'assistant',
-        timestamp: new Date(),
-        citations: []
-      });
-      
-      console.log('[App] Calling sendMessage with streaming...');
-      
-      // Send message to API with streaming enabled
-      const response = await apiClient.sendMessage({
-        content: text,
-        context,
-        userId  // Pass the persistent user_id
-      }, currentConvId, agentId, (chunk) => {
-        // Handle streaming chunks
-        console.log('[App] Stream chunk received:', chunk);
-        if (chunk.type === 'content' && chunk.content) {
-          // Append new content
-          streamedContent += chunk.content;
-          console.log('[App] Updating message with content:', streamedContent.substring(0, 50) + '...');
-          // Update the message with accumulated content
-          updateMessage(assistantMessageId, {
-            content: streamedContent
-          });
-        } else if (chunk.type === 'status') {
-          // Optionally show status updates (e.g., "Retrieving context...")
-          console.log('[App] Status:', chunk.content);
+      let streamedContent = '';
+
+      addMessage({ id: assistantMessageId, content: '', role: 'assistant', timestamp: new Date(), citations: [] });
+
+      const client = useWebSocket ? wsClient : apiClient;
+      const response = await client.sendMessage(
+        { content: text, context, userId },
+        currentConvId,
+        agentId,
+        (chunk) => {
+          if (chunk.type === 'content' && chunk.content) {
+            streamedContent += chunk.content;
+            updateMessage(assistantMessageId, { content: streamedContent });
+          }
         }
-      });
+      );
 
-      console.log('[App] Stream complete, final response:', response);
-
-      // Update final message with complete response, citations, products, and dealers
       updateMessage(assistantMessageId, {
         content: response.content,
         citations: response.citations,
-        products: response.products,  // Phase 5: Product cards
-        dealers: response.dealers      // Phase 5: Dealer cards
+        products: response.products,
+        dealers: response.dealers,
       });
-    } catch (error) {
-      console.error('Error sending message:', error);
-      
-      // Add error message
+    } catch {
       addMessage({
         id: (Date.now() + 1).toString(),
         content: 'Sorry, I encountered an error. Please try again.',
         role: 'assistant',
-        timestamp: new Date()
+        timestamp: new Date(),
       });
     } finally {
       setIsTyping(false);
@@ -223,7 +184,7 @@ function App({ config }: AppProps) {
   return (
     <div className="widget-container">
       <WidgetButton onClick={handleToggleWidget} />
-      
+
       {isOpen && (
         <div className={`widget-overlay ${isExpanded ? 'expanded' : ''}`}>
           <ChatWindow
