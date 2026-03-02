@@ -20,6 +20,21 @@ apiClient.interceptors.response.use(
   }
 );
 
+// Brand identity / widget theme — stored inside Brand.colors
+export interface BrandIdentity {
+  primary_color?: string;          // e.g. "#00c864"
+  default_mode?: 'dark' | 'light'; // admin-chosen mode, no user toggle
+  chat_logo_dark_url?: string;     // logo shown in bubble/hero on dark background
+  chat_logo_light_url?: string;    // logo shown in bubble/hero on light background
+  hero_title?: string;             // e.g. "I'm Antara AI"
+  hero_subtitle?: string;          // e.g. "Ask me anything about senior living"
+  suggestion_chips?: string;       // comma-separated quick-prompt chips
+  cycling_categories?: string;     // comma-separated categories that animate in the subtitle
+  dark_bg_gradient?: string;       // CSS gradient override for dark panel
+  light_bg_gradient?: string;      // CSS gradient override for light panel
+  hide_nova_logo?: boolean;        // hide the NOVA platform wordmark in widget topbar
+}
+
 // Types
 export interface Brand {
   id: string;
@@ -31,7 +46,7 @@ export interface Brand {
   industry: string;
   contact_info?: any;
   brand_voice?: any;
-  colors?: any;
+  colors?: BrandIdentity;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +107,7 @@ export interface CreateBrandRequest {
   industry: string;
   website?: string;
   logo_url?: string;
+  colors?: BrandIdentity;
 }
 
 export interface CreateAgentRequest {

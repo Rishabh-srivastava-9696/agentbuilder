@@ -17,6 +17,7 @@ class BrandBase(BaseModel):
     industry: str
     website: Optional[str] = None
     logo_url: Optional[str] = None
+    colors: Optional[dict] = None
 
 class BrandCreate(BrandBase):
     pass
@@ -27,6 +28,7 @@ class BrandUpdate(BaseModel):
     industry: Optional[str] = None
     website: Optional[str] = None
     logo_url: Optional[str] = None
+    colors: Optional[dict] = None
 
 class Brand(BrandBase):
     id: str
@@ -100,7 +102,7 @@ async def create_brand(brand: BrandCreate):
             "logo_url": brand.logo_url,
             "contact_info": {},
             "brand_voice": {},
-            "colors": {},
+            "colors": brand.colors or {},
             "created_at": now,
             "updated_at": now
         }
