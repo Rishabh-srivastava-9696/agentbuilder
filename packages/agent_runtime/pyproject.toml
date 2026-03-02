@@ -10,7 +10,7 @@ authors = [
     {name = "Agent Builder Team", email = "team@agentbuilder.ai"}
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "isort", "mypy"]
