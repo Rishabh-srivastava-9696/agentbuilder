@@ -592,6 +592,46 @@ class MessageService:
                 conversation_id=conversation_id or str(uuid.uuid4())
             )
     
+    async def inject_history(self, conversation_id: str, agent_id: str, messages: list) -> None:
+        """Inject messages from human takeover into short-term memory so the AI
+        has full context when it resumes control.
+
+        Each entry in `messages` is a dict with 'role' ('user'|'assistant') and 'content'.
+        A synthetic system-level summary is prepended so the LLM understands what happened.
+        """
+        if not messages:
+            return
+        try:
+            await self._load_agent_config(agent_id)
+            await self._ensure_memory_initialized()
+
+            # Synthetic notice so the LLM is aware of the gap
+            await self.short_term.add_message(
+                conversation_id=conversation_id,
+                role=MessageRole.ASSISTANT,
+                content="[System: The following messages were exchanged while a human support agent had control of this conversation.]",
+                metadata={"injected": True, "source": "human_takeover"},
+            )
+
+            for msg in messages:
+                role_str = msg.get("role", "user")
+                content = msg.get("content", "")
+                memory_role = MessageRole.USER if role_str == "user" else MessageRole.ASSISTANT
+                await self.short_term.add_message(
+                    conversation_id=conversation_id,
+                    role=memory_role,
+                    content=content,
+                    metadata={"injected": True, "source": "human_takeover"},
+                )
+
+            logger.info(
+                "takeover_history_injected",
+                conversation_id=conversation_id,
+                messages_count=len(messages),
+            )
+        except Exception as e:
+            logger.warning("inject_history_failed", error=str(e), conversation_id=conversation_id)
+
     async def _retrieve_context(self, request: MessageRequest) -> RetrievalContext:
         """Retrieve relevant context for the message."""
         try:

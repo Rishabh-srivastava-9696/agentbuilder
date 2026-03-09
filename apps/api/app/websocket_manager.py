@@ -13,6 +13,10 @@ class ConnectionManager:
         self.admin_connections: Dict[str, Set[WebSocket]] = {}
         # conversation_id -> boolean flag indicating human is in control
         self.human_control_flags: Dict[str, bool] = {}
+        # conversation_id -> agent_id (registered by widget on connect)
+        self.agent_ids: Dict[str, str] = {}
+        # conversation_id -> messages exchanged during human takeover
+        self.takeover_buffers: Dict[str, list] = {}
 
     async def connect_widget(self, websocket: WebSocket, conversation_id: str):
         await websocket.accept()
@@ -52,11 +56,33 @@ class ConnectionManager:
     def set_human_control(self, conversation_id: str, is_active: bool):
         """Set whether a human agent is currently in control of this conversation."""
         self.human_control_flags[conversation_id] = is_active
+        if is_active:
+            # Start a fresh buffer for this takeover session
+            self.takeover_buffers[conversation_id] = []
         logger.info("human_control_updated", conversation_id=conversation_id, is_active=is_active)
 
     def is_human_in_control(self, conversation_id: str) -> bool:
         """Check if a human agent is in control."""
         return self.human_control_flags.get(conversation_id, False)
+
+    def register_agent_id(self, conversation_id: str, agent_id: str):
+        """Store the agent_id for a conversation (sent by widget on connect)."""
+        self.agent_ids[conversation_id] = agent_id
+
+    def get_agent_id(self, conversation_id: str) -> str | None:
+        """Retrieve the agent_id associated with a conversation."""
+        return self.agent_ids.get(conversation_id)
+
+    def buffer_takeover_message(self, conversation_id: str, role: str, content: str):
+        """Append a message to the human takeover buffer for this conversation."""
+        if conversation_id not in self.takeover_buffers:
+            self.takeover_buffers[conversation_id] = []
+        self.takeover_buffers[conversation_id].append({"role": role, "content": content})
+
+    def pop_takeover_buffer(self, conversation_id: str) -> list:
+        """Return and clear the takeover message buffer for a conversation."""
+        messages = self.takeover_buffers.pop(conversation_id, [])
+        return messages
 
     async def send_to_widget(self, conversation_id: str, message: dict):
         """Send a JSON message to all widget connections for a conversation."""

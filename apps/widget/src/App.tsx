@@ -124,6 +124,13 @@ function App({ config }: AppProps) {
     const ws = new WebSocket(`ws://localhost:8000/api/v1/messages/ws/widget/${conversationId}`);
     controlChannelRef.current = ws;
 
+    ws.onopen = () => {
+      // Register agent_id so backend can inject takeover history into the right memory
+      if (agentId) {
+        ws.send(JSON.stringify({ type: 'register', agent_id: agentId }));
+      }
+    };
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string);
@@ -163,7 +170,7 @@ function App({ config }: AppProps) {
       controlChannelRef.current = null;
       setHumanInControl(false);
     };
-  }, [conversationId]);
+  }, [conversationId, agentId]);
 
   // ── Initialize conversation ID ────────────────────────────────
   React.useEffect(() => {

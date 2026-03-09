@@ -53,6 +53,23 @@ class StrapiClient:
             name=f"strapi_session_{conversation_id}",
         )
 
+    def save_message(self, conversation_id: str, content: str, role: str) -> None:
+        """Fire-and-forget save of a single message (e.g. during human takeover).
+
+        Ensures the session exists first, then saves the message.
+        role should be 'user' or 'agent'.
+        """
+        if not self._enabled:
+            return
+        asyncio.create_task(
+            self._save_message_with_session(conversation_id, content, role),
+            name=f"strapi_msg_{conversation_id}",
+        )
+
+    async def _save_message_with_session(self, conversation_id: str, content: str, role: str) -> None:
+        await self._ensure_session(conversation_id)
+        await self._save_message(conversation_id, content, role)
+
     # ── internals ──────────────────────────────────────────────────────────────
 
     async def _sync(self, conversation_id: str, user_message: str, assistant_message: str) -> None:

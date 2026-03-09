@@ -89,35 +89,16 @@ async def websocket_endpoint(
                 }))
                 continue
             
-            # Mirror user message to any watching admin connections
-            conv_id = request.conversation_id or ""
-            if conv_id:
-                await ws_manager.send_to_admin(conv_id, {
-                    "type": "user_message",
-                    "role": "user",
-                    "content": request.message,
-                })
-
             # Process message and stream response
             try:
-                accumulated = ""
                 async for chunk in message_service.stream_message(request):
                     await websocket.send_text(chunk.model_dump_json())
-                    if chunk.type == "content" and chunk.content:
-                        accumulated += chunk.content
-                # Mirror completed AI response to admin
-                if conv_id and accumulated:
-                    await ws_manager.send_to_admin(conv_id, {
-                        "type": "assistant_message",
-                        "role": "assistant",
-                        "content": accumulated,
-                    })
             except Exception as e:
                 logger.error("Error processing WebSocket message", error=str(e))
                 await websocket.send_text(json.dumps({
                     "type": "error",
                     "content": f"Error: {str(e)}",
-                    "conversation_id": conv_id,
+                    "conversation_id": request.conversation_id or "",
                 }))
                 
     except WebSocketDisconnect:
@@ -128,7 +109,11 @@ async def websocket_endpoint(
 
 
 @router.websocket("/ws/admin/{conversation_id}")
-async def admin_websocket_endpoint(websocket: WebSocket, conversation_id: str):
+async def admin_websocket_endpoint(
+    websocket: WebSocket,
+    conversation_id: str,
+    message_service: MessageService = Depends(get_message_service),
+):
     """Admin WebSocket for human takeover and live conversation monitoring."""
     await ws_manager.connect_admin(websocket, conversation_id)
     try:
@@ -161,7 +146,10 @@ async def admin_websocket_endpoint(websocket: WebSocket, conversation_id: str):
                 })
 
             elif msg_type == "release_control":
+                # Collect buffered takeover messages before clearing state
+                takeover_messages = ws_manager.pop_takeover_buffer(conversation_id)
                 ws_manager.set_human_control(conversation_id, False)
+
                 await ws_manager.send_to_admin(conversation_id, {
                     "type": "control_status",
                     "is_human_in_control": False,
@@ -179,13 +167,26 @@ async def admin_websocket_endpoint(websocket: WebSocket, conversation_id: str):
                     "content": "Conversation switched to AI mode",
                 })
 
+                # Inject takeover messages into AI memory so it has full context
+                agent_id = ws_manager.get_agent_id(conversation_id)
+                if agent_id and takeover_messages:
+                    asyncio.create_task(
+                        message_service.inject_history(conversation_id, agent_id, takeover_messages),
+                        name=f"inject_history_{conversation_id}",
+                    )
+
             elif msg_type == "admin_message":
                 content = msg.get("content", "")
+                # Deliver to widget
                 await ws_manager.send_to_widget(conversation_id, {
                     "type": "admin_message",
                     "role": "assistant",
                     "content": content,
                 })
+                # Buffer for memory injection on release
+                ws_manager.buffer_takeover_message(conversation_id, "assistant", content)
+                # Persist to Strapi (role 'agent' matches Strapi convention)
+                message_service.strapi.save_message(conversation_id, content, "agent")
 
     except WebSocketDisconnect:
         logger.info("Admin WebSocket disconnected", conversation_id=conversation_id)
@@ -196,14 +197,17 @@ async def admin_websocket_endpoint(websocket: WebSocket, conversation_id: str):
 
 
 @router.websocket("/ws/widget/{conversation_id}")
-async def widget_control_channel(websocket: WebSocket, conversation_id: str):
+async def widget_control_channel(
+    websocket: WebSocket,
+    conversation_id: str,
+    message_service: MessageService = Depends(get_message_service),
+):
     """Widget control channel — registers widget with ws_manager so admin can push to it.
 
-    Handles two scenarios:
-    - Admin pushes (control_status, admin_message) arrive via ws_manager.send_to_widget()
-      and are forwarded to the widget over this connection.
-    - When a human agent is in control, user messages sent here are forwarded to the
-      admin instead of going to the AI.
+    Receives:
+    - register: widget sends agent_id so backend can restore AI context on release
+    - ping: heartbeat
+    - user_message: forwarded to admin during human takeover, buffered, and persisted
     """
     await ws_manager.connect_widget(websocket, conversation_id)
     try:
@@ -219,15 +223,25 @@ async def widget_control_channel(websocket: WebSocket, conversation_id: str):
             if msg_type == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
 
+            elif msg_type == "register":
+                # Widget sends its agent_id so we can inject history into the right memory
+                agent_id = msg.get("agent_id", "")
+                if agent_id:
+                    ws_manager.register_agent_id(conversation_id, agent_id)
+
             elif msg_type == "user_message":
-                # Only forward to admin; AI path uses the existing /ws endpoint
                 if ws_manager.is_human_in_control(conversation_id):
                     content = msg.get("content", "")
+                    # Deliver to admin dashboard in real-time
                     await ws_manager.send_to_admin(conversation_id, {
                         "type": "user_message",
                         "role": "user",
                         "content": content,
                     })
+                    # Buffer for memory injection on release
+                    ws_manager.buffer_takeover_message(conversation_id, "user", content)
+                    # Persist to Strapi
+                    message_service.strapi.save_message(conversation_id, content, "user")
 
     except WebSocketDisconnect:
         logger.info("Widget control channel disconnected", conversation_id=conversation_id)
