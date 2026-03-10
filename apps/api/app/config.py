@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     # CORS Configuration
     CORS_ALLOW_ORIGINS: Union[str, List[str]] = [
         "http://localhost:3000",
+        "http://localhost:1337",  # Strapi dashboard
         "http://localhost:3001",  # Admin Dashboard
         "http://localhost:5173",  # Strapi Vite HMR
         "http://localhost:5174",  # Widget

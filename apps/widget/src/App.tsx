@@ -121,52 +121,76 @@ function App({ config }: AppProps) {
   React.useEffect(() => {
     if (!conversationId) return;
 
-    const ws = new WebSocket(`ws://localhost:8000/api/v1/messages/ws/widget/${conversationId}`);
-    controlChannelRef.current = ws;
+    let ws: WebSocket | null = null;
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let destroyed = false;
+    let reconnectDelay = 1_000;
 
-    ws.onopen = () => {
-      // Register agent_id so backend can inject takeover history into the right memory
-      if (agentId) {
-        ws.send(JSON.stringify({ type: 'register', agent_id: agentId }));
-      }
-    };
+    const connect = () => {
+      if (destroyed) return;
+      ws = new WebSocket(`ws://localhost:8000/api/v1/messages/ws/widget/${conversationId}`);
+      controlChannelRef.current = ws;
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data as string);
-        if (msg.type === 'control_status') {
-          setHumanInControl(msg.is_human_in_control ?? false);
-        } else if (msg.type === 'system_notice') {
-          addMessage({
-            id: `sys_${Date.now()}`,
-            content: msg.content || '',
-            role: 'system',
-            timestamp: new Date(),
-          });
-        } else if (msg.type === 'admin_message') {
-          addMessage({
-            id: `admin_${Date.now()}`,
-            content: msg.content || '',
-            role: 'assistant',
-            timestamp: new Date(),
-          });
+      ws.onopen = () => {
+        reconnectDelay = 1_000;
+        if (agentId) {
+          ws!.send(JSON.stringify({ type: 'register', agent_id: agentId }));
         }
-      } catch {
-        // ignore malformed frames
-      }
+        heartbeat = setInterval(() => {
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 30_000);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'control_status') {
+            setHumanInControl(msg.is_human_in_control ?? false);
+          } else if (msg.type === 'system_notice') {
+            addMessage({
+              id: `sys_${Date.now()}`,
+              content: msg.content || '',
+              role: 'system',
+              timestamp: new Date(),
+            });
+          } else if (msg.type === 'admin_message') {
+            addMessage({
+              id: `admin_${Date.now()}`,
+              content: msg.content || '',
+              role: 'assistant',
+              timestamp: new Date(),
+            });
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      ws.onerror = () => {};
+
+      ws.onclose = () => {
+        if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+        controlChannelRef.current = null;
+        if (!destroyed) {
+          // Exponential backoff reconnect, cap at 30s
+          reconnectTimeout = setTimeout(() => {
+            reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+            connect();
+          }, reconnectDelay);
+        }
+      };
     };
 
-    ws.onerror = () => {};
-
-    const heartbeat = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 30_000);
+    connect();
 
     return () => {
-      clearInterval(heartbeat);
-      ws.close();
+      destroyed = true;
+      if (heartbeat) clearInterval(heartbeat);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      ws?.close();
       controlChannelRef.current = null;
       setHumanInControl(false);
     };

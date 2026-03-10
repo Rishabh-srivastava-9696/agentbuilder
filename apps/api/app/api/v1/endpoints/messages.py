@@ -148,6 +148,16 @@ async def admin_websocket_endpoint(
             elif msg_type == "release_control":
                 # Collect buffered takeover messages before clearing state
                 takeover_messages = ws_manager.pop_takeover_buffer(conversation_id)
+
+                # Inject history BEFORE notifying widget that AI is back in control.
+                # This ensures the AI has full context before the user can send the next message.
+                agent_id = ws_manager.get_agent_id(conversation_id)
+                if agent_id and takeover_messages:
+                    try:
+                        await message_service.inject_history(conversation_id, agent_id, takeover_messages)
+                    except Exception as e:
+                        logger.error("inject_history_failed", error=str(e), conversation_id=conversation_id)
+
                 ws_manager.set_human_control(conversation_id, False)
 
                 await ws_manager.send_to_admin(conversation_id, {
@@ -166,14 +176,6 @@ async def admin_websocket_endpoint(
                     "type": "system_notice",
                     "content": "Conversation switched to AI mode",
                 })
-
-                # Inject takeover messages into AI memory so it has full context
-                agent_id = ws_manager.get_agent_id(conversation_id)
-                if agent_id and takeover_messages:
-                    asyncio.create_task(
-                        message_service.inject_history(conversation_id, agent_id, takeover_messages),
-                        name=f"inject_history_{conversation_id}",
-                    )
 
             elif msg_type == "admin_message":
                 content = msg.get("content", "")
