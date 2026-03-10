@@ -34,9 +34,10 @@ class ConnectionManager:
             
             self.mongodb_client = AsyncIOMotorClient(
                 mongodb_uri,
-                maxPoolSize=100,  # Increased for multiple databases
-                minPoolSize=20,   # Increased for multiple databases
-                serverSelectionTimeoutMS=5000
+                maxPoolSize=50,
+                minPoolSize=1,
+                serverSelectionTimeoutMS=5000,
+                heartbeatFrequencyMS=30000,
             )
             
             # Test connection

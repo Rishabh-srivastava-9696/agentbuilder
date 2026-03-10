@@ -391,6 +391,7 @@ export default function AgentWizard() {
         name: agentData.name,
         description: agentData.description,
         system_prompt: agentData.system_prompt,
+        status: 'active',
         metadata: {
           purpose: agentData.purpose,
           role: agentData.role,
@@ -557,6 +558,7 @@ export default function AgentWizard() {
             data={agentData}
             onChange={updateStepData}
             agentId={id}
+            brandId={agentData.brand_id}
           />
         );
       case 6:

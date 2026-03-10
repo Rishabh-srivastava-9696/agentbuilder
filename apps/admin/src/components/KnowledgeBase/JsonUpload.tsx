@@ -1,10 +1,15 @@
 import React, { useState } from 'react';
 import { DocumentArrowUpIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import ShopifyTab from './tabs/ShopifyTab';
+import JsonUrlTab from './tabs/JsonUrlTab';
+import CsvUploadTab from './tabs/CsvUploadTab';
+import ScrapeTab from './tabs/ScrapeTab';
 
 interface JsonUploadProps {
   contentType: 'product' | 'dealer' | 'faq' | 'office' | 'category' | 'guide';
   onUpload: (data: any[]) => void;
   onBack: () => void;
+  brandId?: string;
 }
 
 interface ValidationResult {
@@ -16,11 +21,15 @@ interface ValidationResult {
   fullData: any[];  // Store full data, not just preview
 }
 
-export default function JsonUpload({ contentType, onUpload, onBack }: JsonUploadProps) {
+type UploadMethod = 'file' | 'paste' | 'json_url' | 'csv' | 'shopify' | 'scrape';
+
+export default function JsonUpload({ contentType, onUpload, onBack, brandId = '' }: JsonUploadProps) {
   const [jsonFile, setJsonFile] = useState<File | null>(null);
   const [jsonText, setJsonText] = useState('');
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
-  const [uploadMethod, setUploadMethod] = useState<'file' | 'paste'>('file');
+  const [uploadMethod, setUploadMethod] = useState<UploadMethod>('file');
+
+  const isProduct = contentType === 'product';
 
   const validateJsonData = (data: any): ValidationResult => {
     const errors: string[] = [];
@@ -161,31 +170,50 @@ export default function JsonUpload({ contentType, onUpload, onBack }: JsonUpload
   }
 ]`;
 
+  // Render new catalog tabs directly — they handle their own "Next" button
+  if (uploadMethod === 'shopify') {
+    return <ShopifyTab brandId={brandId} onUpload={onUpload} onBack={() => setUploadMethod('file')} />;
+  }
+  if (uploadMethod === 'json_url') {
+    return <JsonUrlTab brandId={brandId} onUpload={onUpload} onBack={() => setUploadMethod('file')} />;
+  }
+  if (uploadMethod === 'csv') {
+    return <CsvUploadTab brandId={brandId} onUpload={onUpload} onBack={() => setUploadMethod('file')} />;
+  }
+  if (uploadMethod === 'scrape') {
+    return <ScrapeTab brandId={brandId} onUpload={onUpload} onBack={() => setUploadMethod('file')} />;
+  }
+
+  const baseTabs: { key: UploadMethod; label: string }[] = [
+    { key: 'file', label: '📁 Upload File' },
+    { key: 'paste', label: '📋 Paste JSON' },
+  ];
+  const productTabs: { key: UploadMethod; label: string }[] = [
+    { key: 'json_url', label: '🔗 JSON URL' },
+    { key: 'csv', label: '📊 CSV' },
+    { key: 'shopify', label: '🛍️ Shopify' },
+    { key: 'scrape', label: '🕷️ Scrape' },
+  ];
+  const tabs = isProduct ? [...baseTabs, ...productTabs] : baseTabs;
+
   return (
     <div className="space-y-6">
       {/* Upload Method Tabs */}
       <div className="border-b border-gray-200">
-        <nav className="-mb-px flex space-x-8">
-          <button
-            onClick={() => setUploadMethod('file')}
-            className={`${
-              uploadMethod === 'file'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-            } whitespace-nowrap border-b-2 py-4 px-1 text-sm font-medium`}
-          >
-            📁 Upload File
-          </button>
-          <button
-            onClick={() => setUploadMethod('paste')}
-            className={`${
-              uploadMethod === 'paste'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-            } whitespace-nowrap border-b-2 py-4 px-1 text-sm font-medium`}
-          >
-            📋 Paste JSON
-          </button>
+        <nav className="-mb-px flex flex-wrap gap-x-2">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setUploadMethod(tab.key)}
+              className={`${
+                uploadMethod === tab.key
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+              } whitespace-nowrap border-b-2 py-4 px-1 text-sm font-medium`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </nav>
       </div>
 

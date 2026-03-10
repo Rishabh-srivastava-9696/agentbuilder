@@ -219,6 +219,7 @@ export default function DocumentUploadWizard({
               contentType={contentType!}
               onUpload={handleJsonUpload}
               onBack={() => setCurrentStep(1)}
+              brandId={brandId}
             />
           </div>
         );

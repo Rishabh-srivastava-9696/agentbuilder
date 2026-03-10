@@ -19,6 +19,7 @@ class AgentBase(BaseModel):
 class AgentCreate(AgentBase):
     brand_id: str
     configuration: dict
+    status: Optional[str] = "draft"
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -111,7 +112,7 @@ async def create_agent(agent: AgentCreate):
             "description": agent.description,
             "system_prompt": agent.system_prompt,
             "configuration": agent.configuration,
-            "status": "draft",
+            "status": agent.status or "draft",
             "created_at": now,
             "updated_at": now
         }

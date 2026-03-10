@@ -183,6 +183,9 @@ class Settings(BaseSettings):
     STRAPI_URL: str = "http://localhost:1337"
     STRAPI_API_TOKEN: str = ""
 
+    # Firecrawl (product catalog scraping)
+    FIRECRAWL_API_KEY: str = ""
+
     # Azure Key Vault Configuration
     AZURE_KEYVAULT_NAME: Optional[str] = None
     USE_AZURE_KEYVAULT: bool = False

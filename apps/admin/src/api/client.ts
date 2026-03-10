@@ -116,6 +116,7 @@ export interface CreateAgentRequest {
   description: string;
   system_prompt: string;
   configuration: any;
+  status?: 'active' | 'inactive' | 'draft';
   metadata?: {
     purpose?: string;
     role?: string;
