@@ -4,11 +4,13 @@ Supports: Shopify /products.json, JSON feed (auto-detect), CSV, Firecrawl scrape
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import re
 import uuid
 from datetime import datetime
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -327,7 +329,7 @@ async def run_firecrawl_scrape(urls: List[str], job_id: str, api_key: str) -> No
         return
 
     try:
-        from firecrawl import FirecrawlApp  # type: ignore
+        from firecrawl import V1FirecrawlApp, V1JsonConfig  # type: ignore
     except ImportError:
         job["status"] = "error"
         job["error"] = "firecrawl-py is not installed. Run: pip install firecrawl-py"
@@ -364,29 +366,65 @@ async def run_firecrawl_scrape(urls: List[str], job_id: str, api_key: str) -> No
         },
     }
 
-    app = FirecrawlApp(api_key=api_key)
+    app = V1FirecrawlApp(api_key=api_key)
     all_items: List[dict] = []
     per_url: List[dict] = []
 
     for i, url in enumerate(urls):
         job["processed"] = i
         try:
-            result = app.scrape_url(
-                url,
-                params={
-                    "formats": ["extract"],
-                    "extract": {
-                        "schema": extraction_schema,
-                        "systemPrompt": (
-                            "Extract structured product data from this page. "
-                            "Follow schema.org ProductGroup and Product standards. "
-                            "Return currency as ISO 4217 code (USD, EUR, INR, etc.)."
-                        ),
-                    },
-                },
+            extract_cfg = V1JsonConfig(
+                schema_field=extraction_schema,
+                prompt=(
+                    "Extract the product name, SKU, price (as a number), "
+                    "currency code (e.g. INR, USD, EUR), category, image URL, "
+                    "and whether it is in stock. "
+                    "If this is a product with multiple variants (sizes/colors), "
+                    "set product_type to ProductGroup and list each variant. "
+                    "Otherwise set product_type to Product."
+                ),
             )
-            extracted = result.get("extract") or {}
-            if not extracted.get("name"):
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                partial(
+                    app.scrape_url,
+                    url,
+                    formats=["markdown", "extract"],
+                    wait_for=3000,
+                    extract=extract_cfg,
+                ),
+            )
+            # result is a V1ScrapeResponse Pydantic model
+            raw_extract = result.extract
+            if raw_extract is None:
+                extracted = {}
+            elif isinstance(raw_extract, dict):
+                extracted = raw_extract
+            else:
+                extracted = raw_extract.dict() if hasattr(raw_extract, "dict") else {}
+
+            # Normalise common LLM field-name variations → our schema keys
+            field_aliases = {
+                "productName": "name", "title": "name", "product_name": "name",
+                "productPrice": "price", "cost": "price",
+                "currencyCode": "currency", "priceCurrency": "currency",
+                "imageUrl": "image_url", "image": "image_url",
+                "inStock": "in_stock", "available": "in_stock",
+                "productType": "product_type", "type": "product_type",
+            }
+            for alias, canonical in field_aliases.items():
+                if alias in extracted and canonical not in extracted:
+                    extracted[canonical] = extracted.pop(alias)
+
+            # Detect 404 / empty pages before checking extraction results
+            markdown_lower = (result.markdown or "").lower()
+            not_found_patterns = ["page not found", "404", "does not exist", "no page found"]
+            if any(p in markdown_lower for p in not_found_patterns) and len(result.markdown or "") < 2000:
+                per_url.append({"url": url, "status": "error", "error": "Page not found (404) — check the URL", "item_count": 0})
+                continue
+
+            if not extracted or not extracted.get("name"):
                 per_url.append({"url": url, "status": "no_product", "item_count": 0})
                 continue
 
