@@ -37,8 +37,8 @@ export default function StepKnowledgeBase({ data, onChange, agentId, brandId }: 
           const clientModule = await import('../../api/client');
           const resp = await clientModule.agentApi.get(agentId);
           const agent = resp.data as any;
-          // prefer brand_slug when available (some agents store brand_slug in DB)
-          const slug = (agent && (agent.brand_slug || agent.brand_id)) || null;
+          // Always use brand_id (UUID) for consistency — storage key must not change between create and edit
+          const slug = (agent && (agent.brand_id || agent.brand_slug)) || null;
           console.log('[StepKnowledgeBase] Resolved agent to brand:', { agentId, brandSlug: slug });
           setResolvedBrandId(slug);
         } catch (err) {
