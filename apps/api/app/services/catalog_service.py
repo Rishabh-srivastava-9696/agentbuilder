@@ -230,16 +230,41 @@ async def fetch_shopify_products(
 
     all_items: List[dict] = []
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # Use a client without default redirect following to manage it manually and safely
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
             page_info: Optional[str] = None
             page = 1
             while True:
-                url = f"{base}/products.json?limit=250"
+                # Use Admin API if token is provided; otherwise public products.json
+                # Admin API bypasses storefront password protection
+                has_token = bool(access_token and access_token.strip())
+                if has_token:
+                    url = f"{base}/admin/api/2024-01/products.json?limit=250"
+                else:
+                    url = f"{base}/products.json?limit=250"
+
                 if page_info:
                     url += f"&page_info={page_info}"
 
-                logger.info("shopify_fetch_page", page=page, url=url)
+                logger.info("shopify_fetch_page", page=page, url=url, has_token=has_token)
+                
                 resp = await client.get(url, headers=headers)
+                
+                # Manual redirect handling
+                if resp.is_redirect:
+                    location = str(resp.headers.get("Location", ""))
+                    logger.info("shopify_fetch_redirect", location=location)
+                    
+                    if "/password" in location:
+                        raise ValueError(
+                            "The Shopify store is password-protected. Please go to 'Settings' in your Shopify Admin, "
+                            "create a Custom App, and enter the 'Admin API Access Token' (shpat_...) to allow access."
+                        )
+                    
+                    # Follow other redirects (domain changes, etc) once
+                    # update url for the next check/fetch
+                    url = str(resp.url.join(location))
+                    resp = await client.get(url, headers=headers)
 
                 if resp.status_code == 401:
                     raise ValueError(
