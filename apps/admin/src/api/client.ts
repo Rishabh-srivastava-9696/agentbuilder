@@ -159,6 +159,12 @@ export const agentApi = {
   delete: (id: string) => apiClient.delete(`/api/v1/admin/agents/${id}`),
 };
 
+// Catalog API
+export const catalogApi = {
+  syncShopify: (data: { brand_id: string; store_url: string; access_token?: string }) => 
+    apiClient.post<{ job_id: string; status: string }>('/api/v1/catalog/import/shopify', data),
+};
+
 // Health check
 export const healthApi = {
   check: () => apiClient.get('/health'),
@@ -206,6 +212,12 @@ export const api = {
   },
   deleteAgent: async (id: string) => {
     await agentApi.delete(id);
+  },
+  
+  // Catalog
+  syncShopify: async (data: { brand_id: string; store_url: string; access_token?: string }) => {
+    const response = await catalogApi.syncShopify(data);
+    return response.data;
   },
 };
 
