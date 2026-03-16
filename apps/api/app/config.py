@@ -182,6 +182,12 @@ class Settings(BaseSettings):
     # Strapi Dashboard Integration
     STRAPI_URL: str = "http://localhost:1337"
     STRAPI_API_TOKEN: str = ""
+    
+    # Shopify Configuration
+    SHOPIFY_SHOP_URL: str = ""
+    SHOPIFY_STOREFRONT_ADMIN_ACCESS_TOKEN: str = ""
+    SHOPIFY_CUSTOMER_ACCESS_TOKEN: str = ""
+    SHOPIFY_MCP_URL: str = "http://localhost:3005/mcp"
 
     # Firecrawl (product catalog scraping)
     FIRECRAWL_API_KEY: str = ""
@@ -242,3 +248,4 @@ class Settings(BaseSettings):
         # Load from root .env (2 levels up from app/config.py)
         env_file = "../../.env"
         case_sensitive = True
+        extra = "ignore"
