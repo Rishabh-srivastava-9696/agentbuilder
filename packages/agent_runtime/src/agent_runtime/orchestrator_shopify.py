@@ -29,7 +29,9 @@ class ShopifyOrchestrator(Orchestrator):
         super().__init__(llm, tools, critic, system_prompt)
         # Context to track found products/variants for natural language reference
         self.captured_ids: Dict[str, str] = {}
+        self.last_searched: Dict[str, str] = {}
         self.cart_id: Optional[str] = None
+        self.checkout_url: Optional[str] = None
         self.conversation: List[Dict[str, Any]] = []
 
     async def run(
@@ -60,7 +62,9 @@ class ShopifyOrchestrator(Orchestrator):
                 "steps_executed": len(tool_results), 
                 "tool_results": tool_results,
                 "cart_id": self.cart_id,
-                "captured_ids": self.captured_ids
+                "checkout_url": self.checkout_url,
+                "captured_ids": self.captured_ids,
+                "last_searched": self.last_searched
             }
         )
 
@@ -68,7 +72,9 @@ class ShopifyOrchestrator(Orchestrator):
         """Load persistent state and reconstruct conversation history."""
         session_state = (context or {}).get("session_state", {})
         self.cart_id = session_state.get("cart_id")
+        self.checkout_url = session_state.get("checkout_url")
         self.captured_ids = session_state.get("captured_ids", {})
+        self.last_searched = session_state.get("last_searched", {})
         
         self.conversation = []
         if chat_history:
@@ -198,7 +204,16 @@ class ShopifyOrchestrator(Orchestrator):
         
         # 2. Resolve IDs and normalize keys for update_cart
         if tool_name == "update_cart":
-            # The Shopify MCP tool expects 'add_items' (List) and 'product_variant_id' (GID)
+            # Normalize flat input (e.g. {"variant_id": "...", "quantity": 1}) into add_items list
+            if "add_items" not in tool_input and "lines" not in tool_input:
+                variant_id = None
+                for key in ["product_variant_id", "merchandiseId", "merchandise_id", "variant_id", "variantId", "id"]:
+                    if key in tool_input:
+                        variant_id = tool_input.pop(key)
+                        break
+                if variant_id:
+                    tool_input["add_items"] = [{"product_variant_id": variant_id, "quantity": tool_input.pop("quantity", 1)}]
+
             items = tool_input.get("add_items") or tool_input.get("lines")
             if items and isinstance(items, list):
                 tool_input["add_items"] = items
@@ -217,16 +232,54 @@ class ShopifyOrchestrator(Orchestrator):
                     
                     # Resolution logic if no GID found
                     if not existing_id:
-                        item_str = str(item).lower()
-                        for title, gid in self.captured_ids.items():
-                            if title in item_str or any(word in title for word in item_str.split()):
+                        # Extract intent from item description
+                        item_str = str(item.get("title") or item.get("name") or str(item)).lower()
+                        
+                        # Helper to check if item_str refers to the title
+                        def is_match(title_str: str) -> bool:
+                            title_lower = title_str.lower()
+                            # Direct inclusion
+                            if title_lower in item_str or item_str in title_lower:
+                                return True
+                            # Keyword match
+                            item_tokens = set(item_str.replace("{", "").replace("}", "").replace("'", "").split())
+                            title_tokens = set(title_lower.split())
+                            common = item_tokens.intersection(title_tokens)
+                            common = {w for w in common if w not in {"the", "a", "an", "to", "cart", "product", "item", "yes", "ok"}}
+                            return len(common) > 0
+
+                        # 1. Check last_searched FIRST (priority for "yes" / confirmation / pronouns)
+                        # For affirmative intents like "yes", "ok", "do it", try to find what the assistant just said
+                        assistant_last_msg = ""
+                        for msg in reversed(self.conversation):
+                            if msg["role"] == "assistant":
+                                assistant_last_msg = str(msg.get("content", "")).lower()
+                                break
+
+                        for title, gid in self.last_searched.items():
+                            title_lower = title.lower()
+                            affirmative_intents = {"yes", "ok", "it", "add it", "do it"}
+                            is_affir = item_str in affirmative_intents
+                            is_ment = title_lower in assistant_last_msg
+                            if is_match(title) or (is_affir and is_ment):
                                 existing_id = gid
-                                logger.info("shopify_resolved_id", title=title, gid=gid)
+                                logger.info("shopify_resolved_from_last_searched_mention", title=title, gid=gid)
                                 break
                         
-                        if not existing_id and len(self.captured_ids) == 1:
-                            existing_id = list(self.captured_ids.values())[0]
-                            logger.info("shopify_fallback_id")
+                        # 2. Case where user says "yes" but we didn't match the title in the assistant's text
+                        # (Maybe the assistant used a generic name). Fallback to the first item in last_searched.
+                        if not existing_id and item_str in ["yes", "ok", "it", "add it", "do it"]:
+                             if self.last_searched:
+                                 existing_id = list(self.last_searched.values())[0]
+                                 logger.info("shopify_resolved_from_last_searched_fallback")
+
+                        # 3. Check broad captured_ids if still no ID
+                        if not existing_id:
+                            for title, gid in self.captured_ids.items():
+                                if is_match(title):
+                                    existing_id = gid
+                                    logger.info("shopify_resolved_from_captured_ids", title=title, gid=gid)
+                                    break
 
                     # Final normalization to 'product_variant_id'
                     if existing_id:
@@ -275,21 +328,55 @@ class ShopifyOrchestrator(Orchestrator):
             new_id = cart.get("cart_id") or cart.get("id")
             if new_id:
                 self.cart_id = str(new_id)
+            
+            # Capture checkout URL
+            new_url = cart.get("checkout_url") or cart.get("checkoutUrl")
+            if new_url:
+                self.checkout_url = str(new_url)
 
         # Capture Product/Variant IDs for future reference
         products = metadata.get("products", [])
+        
+        # Reset last_searched if this was a new search
+        if tool_name == "search_shop_catalog":
+            self.last_searched = {}
+
         for p in products:
             if not isinstance(p, dict): continue
             name = str(p.get("name") or p.get("title") or "").lower()
             v_id = p.get("variant_id") or p.get("id")
             if name and v_id:
-                self.captured_ids[name] = str(v_id)
+                gid = str(v_id)
+                self.captured_ids[name] = gid
+                if tool_name == "search_shop_catalog":
+                    self.last_searched[name] = gid
 
     def _build_reasoning_prompt(self) -> str:
-        """Construct the few-shot prompting context."""
+        """Construct the few-shot prompting context with mandatory next-step hints for adds."""
         text = ""
-        # Keep last 10 messages for focus
-        for msg in self.conversation[-10:]:
+        # Performance optimization: Keep last 8 messages for focus
+        context_window = self.conversation[-8:]
+        
+        # Detect if we should chain an add
+        last_msg = context_window[-1] if context_window else None
+        is_tool_after_search = False
+        if last_msg and last_msg["role"] == "tool" and last_msg.get("name") == "search_shop_catalog":
+            is_tool_after_search = True
+            
+        # Refine: Only chain if the user's intent was to ADD/BUY or CONFIRM
+        has_add_intent = False
+        if is_tool_after_search:
+            last_user_msg = ""
+            for msg in reversed(self.conversation):
+                if msg["role"] == "user":
+                    last_user_msg = str(msg.get("content", "")).lower()
+                    break
+            
+            # Keywords that imply adding
+            add_keywords = {"add", "buy", "cart", "put in", "purchase", "yes", "ok", "do it"}
+            has_add_intent = any(kw in last_user_msg for kw in add_keywords)
+
+        for msg in context_window:
             role = msg["role"]
             content = msg["content"]
             if role == "user":
@@ -299,6 +386,11 @@ class ShopifyOrchestrator(Orchestrator):
             elif role == "tool":
                 text += f"Tool ({msg.get('name', 'unknown')}): {content}\n"
         
+        if is_tool_after_search and has_add_intent:
+            text += "\n[SYSTEM NOTE]: You just found the product and the user wants to add it. You MUST now return the 'update_cart' JSON immediately. ⛔ DO NOT chat or say 'One moment'. Just return the JSON."
+        elif is_tool_after_search:
+            text += "\n[SYSTEM NOTE]: You just found the product. If the user only asked to see/search, DO NOT add it yet. Ask if they want to add it."
+
         text += "\nAssistant:"
         return text
 
@@ -306,36 +398,71 @@ class ShopifyOrchestrator(Orchestrator):
         """Combine base system prompt with Shopify-specific rules."""
         base_prompt = self.system_prompt or "You are a helpful AI assistant."
         
+        # 1. Format the ACTIVE focus (most recent search)
+        active_focus_ctx = ""
+        if self.last_searched:
+            lines = ["\n### 🎯 ACTIVE PRODUCT FOCUS (MOST RECENT SEARCH):\n"]
+            for title, gid in self.last_searched.items():
+                lines.append(f"- {title} (ID: {gid})\n")
+            lines.append("--> If the user says 'yes', 'add it', or 'ok', they mean THIS product.\n")
+            active_focus_ctx = "".join(lines)
+
+        # 2. Format the broader session history
+        history_products_ctx = ""
+        if self.captured_ids:
+            lines = ["\n### 📚 SESSION PRODUCT HISTORY:\n"]
+            all_recent = list(self.captured_ids.items())
+            num_total = len(all_recent)
+            for i in range(max(0, num_total - 10), num_total):
+                name, gid = all_recent[i]
+                if name not in self.last_searched:
+                    lines.append(f"- {name} (ID: {gid})\n")
+            history_products_ctx = "".join(lines)
+
         shopify_rules = f"""
-You are a Shopify assistant. You help users find products, answer questions about policies, and manage their shopping cart.
+You are a Shopify assistant. You help users find products and manage their shopping cart.
 Current Cart ID: {self.cart_id or "None"}
+{f"Checkout URL: {self.checkout_url}" if self.checkout_url else ""}
 
-⚠️ MANDATORY TOOL USAGE RULES ⚠️
-1. ALWAYS verify the current cart state by calling `get_cart` before answering any questions about what is in the cart. DO NOT rely on your memory or previous turns.
-2. To browse products → Use `search_shop_catalog(query, context)`.
-3. To check policies/FAQs/shipping/returns → Use `search_shop_policies_and_faqs(query, context)`.
-4. To see the current cart items (e.g. "what's in my cart?", "cart info") → Use `get_cart(cart_id)`.
-5. To add or remove items → Use `update_cart(cart_id, add_items)`.
+### STRICT TOOL-FIRST RULE
+**NEVER** return conversational text like "I will add that now" or "One moment please" if you haven't invoked the JSON tool call yet.
+If you are adding an item, the VERY FIRST THING YOU DO is return the JSON. Talk only AFTER the tool has succeeded.
 
-STRICT OUTPUT FORMAT:
-1. To call a tool → You MUST return ONLY a JSON object. No conversational text.
-   Example: {{"tool_name": "search_shop_catalog", "tool_input": {{"query": "socks", "context": "browsing"}}}}
-2. For the final answer → You MUST return natural language. DO NOT return raw JSON.
-   Example: "I found some white cricket socks for you! Would you like me to add them to your cart?"
+### JSON INTERACTION SCHEMA
+When you need to call a tool, you MUST return ONLY a JSON object with these EXACT keys:
+{{
+  "tool_name": "name_of_the_tool",
+  "tool_input": {{ "key": "value" }}
+}}
 
-CRITICAL GUIDELINES:
-- **IMMEDIATE ACTION**: If the user says "add [product] to cart", "buy [product]", or "add it", and you have found the product/variant → You MUST call `update_cart` immediately in the VERY NEXT iteration. DO NOT ask "Would you like me to add these?". Just do it.
-- DO NOT say "Done" or "I have added..." UNLESS you have executed `update_cart` in a previous iteration of THIS turn and received a successful response.
-- DO NOT report cart items UNLESS you have executed `get_cart` in THIS turn.
-- IF a user asks to add something you haven't searched for yet (e.g. "add socks") → You MUST first call `search_shop_catalog`.
-- IF a user asks to remove something → You MUST first call `get_cart`, then call `update_cart` with a negative quantity for that specific variant ID.
-- IF you do not have a Cart ID yet and need to add an item → Omit the `cart_id` parameter entirely from `update_cart` to create a new cart.
-- ONLY add items to the cart if the user explicitly says "add", "buy", "yes" (after you suggested adding), or "I want this".
-- NEVER ask the user for "GIDs" or "IDs". Use the names you see in the tool results.
+Examples:
+- To search: {{"tool_name": "search_shop_catalog", "tool_input": {{"query": "socks", "context": "browsing"}}}}
+- To add to cart: {{"tool_name": "update_cart", "tool_input": {{"add_items": [{{"product_variant_id": "gid://shopify/ProductVariant/123", "quantity": 1}}]}}}}
 
-CHAINING EXAMPLES:
-1. User: "Add white socks" -> Action: `search_shop_catalog` -> (Observes result) -> Thought: I see the variant ID. Now I'll add it. -> Action: `update_cart` -> (Observes result) -> Final Answer: "Done! I've added them."
-2. User: "What's in my cart?" -> Action: `get_cart` -> (Observes result) -> Final Answer: "You have white socks in your cart."
+### SEQUENCING EXAMPLES
+Example 1 (Direct Add Request):
+User: "Add white socks"
+Thought: {{"tool_name": "search_shop_catalog", "tool_input": {{"query": "white socks"}}}}
+Tool Result: [{{"title": "White Socks", "variant_id": "gid://..."}}]
+Thought: {{"tool_name": "update_cart", "tool_input": {{"add_items": [{{"product_variant_id": "gid://...", "quantity": 1}}]}}}}
+Tool Result: {{"success": true}}
+Thought: "I've added the white socks to your cart!"
+
+## CONTEXT & FOCUS
+{active_focus_ctx}{history_products_ctx}
+
+### MANDATORY EXECUTION RULES
+1. **YES / CONFIRMATION HANDLING**: If the user says "yes" or "ok" after a search, use the ID from 🎯 ACTIVE PRODUCT FOCUS. Return the `update_cart` JSON immediately.
+2. **IMMEDIATE CHAINING**: If user says "add [product]" or "buy [product]":
+   - Search if needed, then IMMEDIATELY call `update_cart` in the next iteration. 
+   - NEVER ask "Would you like me to add it?" if they already ordered you to add.
+   - **CRITICAL**: If the user only said "[product]" (e.g. "socks") without "add" or "buy", ONLY search. DO NOT add it yet.
+3. **CART VERIFICATION**: Always `get_cart` before questions about your current cart items.
+4. **CHECKOUT LINK**: Whenever you update the cart or show cart information, you MUST provide the Checkout URL to the user in your final answer.
+
+### OUTPUT FORMAT
+- To call a tool: Return ONLY the JSON object. No chat.
+- Final Answer: Return ONLY natural language. No JSON.
 """
         return f"{base_prompt}\n\n{shopify_rules}"
 
