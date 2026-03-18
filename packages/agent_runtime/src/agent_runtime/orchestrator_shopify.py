@@ -32,6 +32,7 @@ class ShopifyOrchestrator(Orchestrator):
         self.last_searched: Dict[str, str] = {}
         self.cart_id: Optional[str] = None
         self.checkout_url: Optional[str] = None
+        self.cart_lines: List[Dict[str, Any]] = []
         self.conversation: List[Dict[str, Any]] = []
 
     async def run(
@@ -63,6 +64,7 @@ class ShopifyOrchestrator(Orchestrator):
                 "tool_results": tool_results,
                 "cart_id": self.cart_id,
                 "checkout_url": self.checkout_url,
+                "cart_lines": self.cart_lines,
                 "captured_ids": self.captured_ids,
                 "last_searched": self.last_searched
             }
@@ -73,6 +75,7 @@ class ShopifyOrchestrator(Orchestrator):
         session_state = (context or {}).get("session_state", {})
         self.cart_id = session_state.get("cart_id")
         self.checkout_url = session_state.get("checkout_url")
+        self.cart_lines = session_state.get("cart_lines", [])
         self.captured_ids = session_state.get("captured_ids", {})
         self.last_searched = session_state.get("last_searched", {})
         
@@ -258,9 +261,8 @@ class ShopifyOrchestrator(Orchestrator):
 
                         for title, gid in self.last_searched.items():
                             title_lower = title.lower()
-                            affirmative_intents = {"yes", "ok", "it", "add it", "do it"}
-                            is_affir = item_str in affirmative_intents
-                            is_ment = title_lower in assistant_last_msg
+                            is_affir = bool(item_str in ("yes", "ok", "it", "add it", "do it"))
+                            is_ment = bool(str(title_lower) in str(assistant_last_msg))
                             if is_match(title) or (is_affir and is_ment):
                                 existing_id = gid
                                 logger.info("shopify_resolved_from_last_searched_mention", title=title, gid=gid)
@@ -333,6 +335,9 @@ class ShopifyOrchestrator(Orchestrator):
             new_url = cart.get("checkout_url") or cart.get("checkoutUrl")
             if new_url:
                 self.checkout_url = str(new_url)
+            
+            # Store full lines for prompt injection
+            self.cart_lines = cart.get("lines") or cart.get("line_items") or []
 
         # Capture Product/Variant IDs for future reference
         products = metadata.get("products", [])
@@ -365,34 +370,61 @@ class ShopifyOrchestrator(Orchestrator):
             
         # Refine: Only chain if the user's intent was to ADD/BUY or CONFIRM
         has_add_intent = False
-        if is_tool_after_search:
-            last_user_msg = ""
-            for msg in reversed(self.conversation):
-                if msg["role"] == "user":
-                    last_user_msg = str(msg.get("content", "")).lower()
-                    break
-            
+        has_remove_intent = False
+        last_user_msg = ""
+        
+        # Resolve user msg safely
+        for msg in reversed(self.conversation):
+            if msg.get("role") == "user":
+                last_user_msg = str(msg.get("content", "")).lower()
+                break
+        
+        if is_tool_after_search and last_user_msg:
             # Keywords that imply adding
-            add_keywords = {"add", "buy", "cart", "put in", "purchase", "yes", "ok", "do it"}
-            has_add_intent = any(kw in last_user_msg for kw in add_keywords)
+            has_add_intent = any(kw in last_user_msg for kw in ["add", "buy", "cart", "put in", "purchase", "yes", "ok", "do it"])
+
+        # Detect removal intent
+        if last_user_msg:
+            has_remove_intent = any(kw in last_user_msg for kw in ["remove", "delete", "decrease", "minus", "less", "reduce"])
 
         for msg in context_window:
-            role = msg["role"]
-            content = msg["content"]
+            role = str(msg.get("role", ""))
+            content = str(msg.get("content", ""))
             if role == "user":
                 text += f"User: {content}\n"
             elif role == "assistant":
                 text += f"Assistant: {content}\n"
             elif role == "tool":
-                text += f"Tool ({msg.get('name', 'unknown')}): {content}\n"
+                t_name = str(msg.get("name", "unknown"))
+                text += f"Tool ({t_name}): {content}\n"
         
         if is_tool_after_search and has_add_intent:
             text += "\n[SYSTEM NOTE]: You just found the product and the user wants to add it. You MUST now return the 'update_cart' JSON immediately. ⛔ DO NOT chat or say 'One moment'. Just return the JSON."
         elif is_tool_after_search:
             text += "\n[SYSTEM NOTE]: You just found the product. If the user only asked to see/search, DO NOT add it yet. Ask if they want to add it."
+        
+        if has_remove_intent:
+            # Check if we already have the cart info in the last few messages
+            has_recent_cart = any(str(m.get("role")) == "tool" and str(m.get("name")) in ["get_cart", "update_cart"] for m in context_window)
+            if not has_recent_cart:
+                text += "\n[SYSTEM NOTE]: The user wants to remove/decrease an item. You MUST call 'get_cart' first to find the correct line_id and current quantity. ⛔ DO NOT chat first."
 
-        text += "\nAssistant:"
-        return text
+        return str(text) + "\nAssistant:"
+
+    def _get_cart_lines_context(self) -> str:
+        """Format current cart items for prompt injection."""
+        if not self.cart_lines:
+            return ""
+        
+        ctx = "\n### 🛒 CURRENT CART ITEMS (for removal/updates):\n"
+        for line in self.cart_lines:
+            if not isinstance(line, dict): continue
+            line_id = str(line.get("id") or "unknown")
+            qty = line.get("quantity", 0)
+            merch = line.get("merchandise") or {}
+            title = merch.get("title") or merch.get("name") or "Product"
+            ctx += f"- {title} (ID: {line_id}, Qty: {qty})\n"
+        return ctx
 
     def _get_combined_system_prompt(self) -> str:
         """Combine base system prompt with Shopify-specific rules."""
@@ -423,6 +455,7 @@ class ShopifyOrchestrator(Orchestrator):
 You are a Shopify assistant. You help users find products and manage their shopping cart.
 Current Cart ID: {self.cart_id or "None"}
 {f"Checkout URL: {self.checkout_url}" if self.checkout_url else ""}
+{self._get_cart_lines_context()}
 
 ### STRICT TOOL-FIRST RULE
 **NEVER** return conversational text like "I will add that now" or "One moment please" if you haven't invoked the JSON tool call yet.
@@ -438,6 +471,7 @@ When you need to call a tool, you MUST return ONLY a JSON object with these EXAC
 Examples:
 - To search: {{"tool_name": "search_shop_catalog", "tool_input": {{"query": "socks", "context": "browsing"}}}}
 - To add to cart: {{"tool_name": "update_cart", "tool_input": {{"add_items": [{{"product_variant_id": "gid://shopify/ProductVariant/123", "quantity": 1}}]}}}}
+- To remove/decrement from cart: {{"tool_name": "update_cart", "tool_input": {{"remove_items": ["gid://shopify/CartLine/123"], "update_items": [{{"id": "gid://shopify/CartLine/456", "quantity": 1}}]}}}}
 
 ### SEQUENCING EXAMPLES
 Example 1 (Direct Add Request):
@@ -447,6 +481,14 @@ Tool Result: [{{"title": "White Socks", "variant_id": "gid://..."}}]
 Thought: {{"tool_name": "update_cart", "tool_input": {{"add_items": [{{"product_variant_id": "gid://...", "quantity": 1}}]}}}}
 Tool Result: {{"success": true}}
 Thought: "I've added the white socks to your cart!"
+
+Example 2 (Removal Request):
+User: "Remove one white sock"
+Thought: {{"tool_name": "get_cart", "tool_input": {{}}}}
+Tool Result: {{"success": true, "metadata": {{"cart": {{"lines": [{{"id": "line_123", "quantity": 2, "merchandise": {{"title": "White Socks"}}}}]}}}}}}
+Thought: {{"tool_name": "update_cart", "tool_input": {{"update_items": [{{"id": "line_123", "quantity": 1}}]}}}}
+Tool Result: {{"success": true}}
+Thought: "I've removed one pair of white socks. You now have 1 pair remaining."
 
 ## CONTEXT & FOCUS
 {active_focus_ctx}{history_products_ctx}
@@ -458,7 +500,11 @@ Thought: "I've added the white socks to your cart!"
    - NEVER ask "Would you like me to add it?" if they already ordered you to add.
    - **CRITICAL**: If the user only said "[product]" (e.g. "socks") without "add" or "buy", ONLY search. DO NOT add it yet.
 3. **CART VERIFICATION**: Always `get_cart` before questions about your current cart items.
-4. **CHECKOUT LINK**: Whenever you update the cart or show cart information, you MUST provide the Checkout URL to the user in your final answer.
+4. **REMOVAL / DECREMENT LOGIC**: If the user wants to "remove" or "delete" an item:
+   - You MUST first call `get_cart` to see the current lines and their quantities.
+   - If current quantity is 1: Use `update_cart` with `remove_items`: ["line_id"].
+   - If current quantity > 1: Use `update_cart` with `update_items`: [{{"id": "line_id", "quantity": new_qty}}].
+5. **CHECKOUT LINK**: Whenever you update the cart or show cart information, you MUST provide the Checkout URL to the user in your final answer.
 
 ### OUTPUT FORMAT
 - To call a tool: Return ONLY the JSON object. No chat.
