@@ -574,6 +574,8 @@ class MessageService:
                         session_state["cart_id"] = meta["cart_id"]
                     if "checkout_url" in meta:
                         session_state["checkout_url"] = meta["checkout_url"]
+                    if "cart_lines" in meta:
+                        session_state["cart_lines"] = meta["cart_lines"]
                     if "captured_ids" in meta:
                         session_state["captured_ids"] = meta.get("captured_ids", {})
                     if "last_searched" in meta:
@@ -672,6 +674,7 @@ class MessageService:
                     "plan": agent_result.metadata.get("plan"),
                     "cart_id": saved_cart_id,
                     "checkout_url": agent_result.metadata.get("checkout_url"),
+                    "cart_lines": agent_result.metadata.get("cart_lines"),
                     "captured_ids": agent_result.metadata.get("captured_ids"),
                     "last_searched": agent_result.metadata.get("last_searched"),
                 }
