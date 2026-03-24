@@ -12,27 +12,8 @@ services:
     env_file:
       - .env.docker                     # secrets — never baked into the image
     environment:
-      # These override env_file values to use Docker service names
-      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      API_HOST: ${API_HOST:-0.0.0.0}
-      API_PORT: ${API_PORT:-8000}
-      SHOPIFY_MCP_URL: ${SHOPIFY_MCP_URL:-http://shopify:3005/mcp}
-      # Pass remaining secrets from env
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
-      MONGO_SYSTEM_DB: ${MONGO_SYSTEM_DB:-agent-builder}
-      MONGODB_DATABASE: ${MONGODB_DATABASE:-agent-builder}
-      SECRET_KEY: ${SECRET_KEY:-}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000,http://localhost:5174}
-      USE_AZURE_KEYVAULT: ${USE_AZURE_KEYVAULT:-false}
-      AZURE_KEYVAULT_NAME: ${AZURE_KEYVAULT_NAME:-}
-      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
-      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
-      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
-      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-openai}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Only Docker-internal service URLs that differ from .env.docker defaults
+      SHOPIFY_MCP_URL: "http://shopify:3005/mcp"
     depends_on:
       mongodb:
         condition: service_healthy
