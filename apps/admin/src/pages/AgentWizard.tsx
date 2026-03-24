@@ -62,6 +62,11 @@ interface AgentData {
   rerank_top_k: number;
   context_window: number;
 
+  // Data Source
+  data_source: 'rag' | 'shopify' | 'none';
+  shopify_shop_url: string;
+  shopify_access_token: string;
+
   // Features
   websockets: boolean;
   file_upload: boolean;
@@ -115,6 +120,11 @@ const initialData: AgentData = {
   rerank_top_k: 3,
   context_window: 2000,
 
+  // Data Source
+  data_source: 'none',
+  shopify_shop_url: '',
+  shopify_access_token: '',
+
   // Features
   websockets: true,
   file_upload: false,
@@ -133,7 +143,7 @@ const steps = [
   { id: 1, name: 'Basic Info', description: 'Agent details and purpose' },
   { id: 2, name: 'LLM Config', description: 'Language model settings' },
   { id: 3, name: 'System Prompt', description: 'Agent personality and behavior' },
-  { id: 4, name: 'RAG Config', description: 'Retrieval settings' },
+  { id: 4, name: 'Data Source', description: 'Connect external knowledge' },
   { id: 5, name: 'Knowledge Base', description: 'Upload and manage documents' },
   { id: 6, name: 'Features', description: 'Features and security' },
   { id: 7, name: 'Review', description: 'Test and deploy' },
@@ -282,6 +292,11 @@ export default function AgentWizard() {
         frequency_penalty: llm.frequency_penalty ?? 0.0,
         presence_penalty: llm.presence_penalty ?? 0.0,
 
+        // Data Source
+        data_source: config.data_source || (rag.enabled ? 'rag' : (config.shopify ? 'shopify' : 'none')),
+        shopify_shop_url: config.shopify?.shop_url || '',
+        shopify_access_token: config.shopify?.access_token || '',
+
         // System Prompt
         system_prompt: existingAgent.system_prompt || '',
         personality_traits: personality.traits || [],
@@ -411,7 +426,7 @@ export default function AgentWizard() {
             communication_style: agentData.communication_style,
             response_format: agentData.response_format,
           },
-          rag: agentData.rag_enabled ? {
+          rag: agentData.data_source === 'rag' ? {
             enabled: true,
             embedding: {
               provider: agentData.embedding_provider,
@@ -434,6 +449,11 @@ export default function AgentWizard() {
           } : {
             enabled: false,
           },
+          data_source: agentData.data_source,
+          shopify: agentData.data_source === 'shopify' ? {
+            shop_url: agentData.shopify_shop_url,
+            access_token: agentData.shopify_access_token,
+          } : undefined,
           features: {
             websockets: agentData.websockets,
             file_upload: agentData.file_upload ? {
@@ -550,6 +570,7 @@ export default function AgentWizard() {
           <StepRAGConfig
             data={agentData}
             onChange={updateStepData}
+            brandId={agentData.brand_id}
           />
         );
       case 5:

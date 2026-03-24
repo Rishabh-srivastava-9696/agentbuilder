@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { api } from '../../api/client';
 
 interface StepRAGConfigProps {
   data: {
-    rag_enabled: boolean;
+    data_source: 'rag' | 'shopify' | 'none';
+    shopify_shop_url: string;
+    shopify_access_token: string;
     embedding_provider: string;
     embedding_model: string;
     top_k: number;
@@ -11,6 +14,7 @@ interface StepRAGConfigProps {
     rerank_top_k: number;
     context_window: number;
   };
+  brandId?: string;
   onChange: (field: string, value: string | number | boolean) => void;
 }
 
@@ -43,36 +47,143 @@ const embeddingProviders = [
   }
 ];
 
-export default function StepRAGConfig({ data, onChange }: StepRAGConfigProps) {
+export default function StepRAGConfig({ data, brandId, onChange }: StepRAGConfigProps) {
   const selectedProvider = embeddingProviders.find(p => p.id === data.embedding_provider);
   const availableModels = selectedProvider?.models || [];
+  
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+
+  const handleShopifySync = async () => {
+    if (!brandId) {
+       alert("Please complete the basic information step and save the agent first, to link it to a brand.");
+       return;
+    }
+    if (!data.shopify_shop_url) {
+      alert("Please enter a Shop URL.");
+      return;
+    }
+    setIsSyncing(true);
+    setSyncStatus('Starting catalog sync...');
+    try {
+      const resp = await api.syncShopify({
+        brand_id: brandId,
+        store_url: data.shopify_shop_url,
+        access_token: data.shopify_access_token || undefined,
+      });
+      setSyncStatus(`Sync initiated. Job ID: ${resp.job_id}`);
+    } catch (e: any) {
+      console.error(e);
+      setSyncStatus(`Sync failed: ${e.message || 'Unknown error'}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">RAG Configuration</h3>
+        <h3 className="text-lg font-medium text-gray-900">Data Source Configuration</h3>
         <p className="mt-1 text-sm text-gray-600">
-          Configure how your agent retrieves and uses knowledge from documents.
+          Configure how your agent retrieves and uses knowledge to answer your users.
         </p>
       </div>
 
-      {/* Enable RAG */}
-      <div className="flex items-center">
-        <input
-          id="rag_enabled"
-          type="checkbox"
-          checked={data.rag_enabled}
-          onChange={(e) => onChange('rag_enabled', e.target.checked)}
-          className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-        />
-        <label htmlFor="rag_enabled" className="ml-2 block text-sm text-gray-900">
-          Enable Retrieval-Augmented Generation (RAG)
-        </label>
-      </div>
+      {/* Data Source Selection */}
+      <fieldset>
+        <legend className="sr-only">Data Source</legend>
+        <div className="space-y-4">
 
-      {data.rag_enabled && (
-        <>
-          {/* Embedding Configuration */}
+          <div className="flex items-center">
+            <input
+              id="source_rag"
+              name="data_source"
+              type="radio"
+              checked={data.data_source === 'rag'}
+              onChange={() => onChange('data_source', 'rag')}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+            />
+            <label htmlFor="source_rag" className="ml-3 block text-sm font-medium text-gray-700">
+              Retrieval-Augmented Generation (Upload Custom Documents)
+            </label>
+          </div>
+          <div className="flex items-center">
+            <input
+              id="source_shopify"
+              name="data_source"
+              type="radio"
+              checked={data.data_source === 'shopify'}
+              onChange={() => onChange('data_source', 'shopify')}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+            />
+            <label htmlFor="source_shopify" className="ml-3 block text-sm font-medium text-gray-700">
+              Shopify Store Integration
+            </label>
+          </div>
+        </div>
+      </fieldset>
+
+      {/* Shopify Configuration */}
+      {data.data_source === 'shopify' && (
+        <div className="space-y-6 border-t border-gray-200 pt-6">
+          <h4 className="text-md font-medium text-gray-900">Shopify Connection</h4>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <div>
+              <label htmlFor="shopify_shop_url" className="block text-sm font-medium text-gray-700">
+                Shopify Store URL *
+              </label>
+              <input
+                type="url"
+                id="shopify_shop_url"
+                placeholder="https://your-store.myshopify.com"
+                value={data.shopify_shop_url}
+                onChange={(e) => onChange('shopify_shop_url', e.target.value)}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="shopify_access_token" className="block text-sm font-medium text-gray-700">
+                Access Token (Optional)
+              </label>
+              <input
+                type="password"
+                id="shopify_access_token"
+                placeholder="shpat_..."
+                value={data.shopify_access_token}
+                onChange={(e) => onChange('shopify_access_token', e.target.value)}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Required only if your store catalog is private or password-protected.
+              </p>
+            </div>
+          </div>
+          
+          <div className="bg-gray-50 p-4 rounded-md">
+            <div className="flex items-center justify-between">
+              <div>
+                <h5 className="text-sm font-medium text-gray-900">Sync Product Catalog</h5>
+                <p className="text-sm text-gray-500 mt-1">Import products into AgentBuilder for this brand.</p>
+                {syncStatus && <p className="text-sm font-semibold mt-2 text-primary-600">{syncStatus}</p>}
+              </div>
+              <button
+                type="button"
+                className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
+                onClick={handleShopifySync}
+                disabled={isSyncing || !data.shopify_shop_url}
+              >
+                {isSyncing ? 'Syncing...' : 'Sync Now'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RAG Configuration */}
+      {data.data_source === 'rag' && (
+        <div className="space-y-6 border-t border-gray-200 pt-6">
+          <h4 className="text-md font-medium text-gray-900">Embedding Settings</h4>
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
               <label htmlFor="embedding_provider" className="block text-sm font-medium text-gray-700">
@@ -119,7 +230,7 @@ export default function StepRAGConfig({ data, onChange }: StepRAGConfigProps) {
             </div>
           </div>
 
-          {/* Retrieval Parameters */}
+          <h4 className="text-md font-medium text-gray-900">Retrieval Parameters</h4>
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label htmlFor="top_k" className="block text-sm font-medium text-gray-700">
@@ -161,7 +272,7 @@ export default function StepRAGConfig({ data, onChange }: StepRAGConfigProps) {
                 </div>
               </div>
               <p className="mt-1 text-xs text-gray-500">
-                Minimum similarity score for relevant results
+                Minimum similarity score
               </p>
             </div>
 
@@ -180,12 +291,12 @@ export default function StepRAGConfig({ data, onChange }: StepRAGConfigProps) {
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
               />
               <p className="mt-1 text-xs text-gray-500">
-                Maximum tokens for retrieved context
+                Max tokens for retrieved context
               </p>
             </div>
           </div>
 
-          {/* Reranking Configuration */}
+          <h4 className="text-md font-medium text-gray-900">Reranking</h4>
           <div className="space-y-4">
             <div className="flex items-center">
               <input
@@ -215,84 +326,15 @@ export default function StepRAGConfig({ data, onChange }: StepRAGConfigProps) {
                   className="mt-1 block w-32 rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
                 />
                 <p className="mt-1 text-xs text-gray-500">
-                  Number of results to rerank (max {Math.min(data.top_k, 10)})
+                  Must be ≤ Top K (max {Math.min(data.top_k, 10)})
                 </p>
               </div>
             )}
           </div>
-
-          {/* Performance Recommendations */}
-          <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <h3 className="text-sm font-medium text-blue-800">
-                  Recommended Settings
-                </h3>
-                <div className="mt-2 text-sm text-blue-700">
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li><strong>Top K:</strong> Start with 5-7 results for most use cases</li>
-                    <li><strong>Similarity Threshold:</strong> 0.7-0.8 for balanced relevance</li>
-                    <li><strong>Context Window:</strong> 2000-3000 tokens for comprehensive context</li>
-                    <li><strong>Reranking:</strong> Enable for better accuracy with slight latency increase</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Quality vs Performance Trade-offs */}
-          <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <h3 className="text-sm font-medium text-yellow-800">
-                  Performance Considerations
-                </h3>
-                <div className="mt-2 text-sm text-yellow-700">
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Higher Top K = More context but slower responses</li>
-                    <li>Lower similarity threshold = More results but less precision</li>
-                    <li>Reranking improves quality but adds 100-200ms latency</li>
-                    <li>Larger context windows increase LLM costs</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
-      {!data.rag_enabled && (
-        <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
-          <div className="flex">
-            <div className="flex-shrink-0">
-              <svg className="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-              </svg>
-            </div>
-            <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-800">
-                RAG Disabled
-              </h3>
-              <div className="mt-2 text-sm text-gray-700">
-                <p>
-                  Your agent will rely only on its training data and system prompt. 
-                  Enable RAG to give your agent access to uploaded documents and specialized knowledge.
-                </p>
-              </div>
-            </div>
-          </div>
         </div>
       )}
+
+
     </div>
   );
 }
