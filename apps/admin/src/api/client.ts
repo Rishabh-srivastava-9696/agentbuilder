@@ -242,6 +242,10 @@ export const llmApi = {
     apiClient.get<AzureOpenAIDeploymentsResponse>('/api/v1/admin/llm/azure/deployments'),
 };
 
+export const adminSessionApi = {
+  validate: () => apiClient.get<{ authorized: true }>('/api/v1/admin/session/validate'),
+};
+
 // Catalog API
 export const catalogApi = {
   syncShopify: (data: { brand_id: string; store_url: string; access_token?: string }) => 

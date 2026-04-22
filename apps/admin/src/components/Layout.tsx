@@ -6,7 +6,8 @@ import {
   CpuChipIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
-import { clearAdminApiKey, getAdminApiKey, setAdminApiKey } from '../api/client';
+import { adminSessionApi, clearAdminApiKey, getAdminApiKey, setAdminApiKey } from '../api/client';
+import { ApiError } from '../api/errorHandler';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -22,15 +23,54 @@ const navigation = [
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const [adminApiKey, setAdminApiKeyInput] = useState(() => getAdminApiKey());
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveMessage, setSaveMessage] = useState('');
 
-  const handleSaveAdminKey = () => {
-    setAdminApiKey(adminApiKey);
-    setAdminApiKeyInput(getAdminApiKey());
+  const handleSaveAdminKey = async () => {
+    const trimmedValue = adminApiKey.trim();
+    const previousKey = getAdminApiKey();
+    const hadPreviousKey = previousKey.trim().length > 0;
+
+    if (!trimmedValue) {
+      clearAdminApiKey();
+      setAdminApiKeyInput('');
+      setSaveState('idle');
+      setSaveMessage('');
+      return;
+    }
+
+    setSaveState('saving');
+    setSaveMessage('Validating admin key...');
+
+    setAdminApiKey(trimmedValue);
+
+    try {
+      await adminSessionApi.validate();
+      setAdminApiKeyInput(trimmedValue);
+      setSaveState('saved');
+      setSaveMessage('Admin key saved for this browser session.');
+    } catch (error) {
+      if (hadPreviousKey && previousKey !== trimmedValue) {
+        setAdminApiKey(previousKey);
+      } else {
+        clearAdminApiKey();
+      }
+
+      const message =
+        error instanceof ApiError
+          ? error.message
+          : 'Could not validate the admin key. Please try again.';
+
+      setSaveState('error');
+      setSaveMessage(message);
+    }
   };
 
   const handleClearAdminKey = () => {
     clearAdminApiKey();
     setAdminApiKeyInput('');
+    setSaveState('idle');
+    setSaveMessage('');
   };
 
   return (
@@ -81,22 +121,48 @@ export default function Layout({ children }: LayoutProps) {
               <p className="text-xs text-gray-500">
                 Enter the admin key for this browser session only. It is no longer shipped in runtime config.
               </p>
+              {saveMessage && (
+                <p
+                  className={`mt-1 text-xs ${
+                    saveState === 'saved'
+                      ? 'text-green-600'
+                      : saveState === 'error'
+                        ? 'text-red-600'
+                        : 'text-gray-500'
+                  }`}
+                >
+                  {saveMessage}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <input
                 aria-label="Admin API key"
                 className="w-72 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-                onChange={(event) => setAdminApiKeyInput(event.target.value)}
+                onChange={(event) => {
+                  setAdminApiKeyInput(event.target.value);
+                  if (saveState !== 'idle') {
+                    setSaveState('idle');
+                    setSaveMessage('');
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleSaveAdminKey();
+                  }
+                }}
                 placeholder="Paste admin API key"
                 type="password"
                 value={adminApiKey}
               />
               <button
                 className="rounded-md bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800"
-                onClick={handleSaveAdminKey}
+                disabled={saveState === 'saving'}
+                onClick={() => void handleSaveAdminKey()}
                 type="button"
               >
-                Save
+                {saveState === 'saving' ? 'Saving...' : 'Save'}
               </button>
               <button
                 className="rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
