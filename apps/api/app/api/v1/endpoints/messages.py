@@ -14,6 +14,7 @@ from commons.types.requests import MessageRequest
 from commons.types.responses import MessageResponse, StreamingMessageResponse
 from ....auth.admin_key import is_admin_key_authorized
 from ....dependencies import get_message_service, get_settings
+from ....security.rate_limiter import check_rate_limit
 from ....services.message_service import MessageService
 from ....websocket_manager import ws_manager
 
@@ -24,6 +25,20 @@ WS_POLICY_VIOLATION = 1008
 
 async def _close_websocket(websocket: WebSocket, reason: str) -> None:
     await websocket.close(code=WS_POLICY_VIOLATION, reason=reason)
+
+
+async def _enforce_websocket_rate_limit(websocket: WebSocket, endpoint: str) -> bool:
+    settings = get_settings()
+    ip_address = websocket.client.host if websocket.client else None
+    is_allowed, _info = await check_rate_limit(
+        ip_address=ip_address,
+        endpoint=endpoint,
+        limit=settings.RATE_LIMIT_REQUESTS_PER_MINUTE,
+    )
+    if not is_allowed:
+        await _close_websocket(websocket, "Rate limit exceeded")
+        return False
+    return True
 
 
 @router.post("/", response_model=MessageResponse)
@@ -75,12 +90,16 @@ async def websocket_endpoint(
     message_service: MessageService = Depends(get_message_service)
 ):
     """WebSocket endpoint for real-time messaging."""
+    if not await _enforce_websocket_rate_limit(websocket, "WS_CONNECT:/messages/ws"):
+        return
     await websocket.accept()
     
     try:
         while True:
             # Receive message from client
             data = await websocket.receive_text()
+            if not await _enforce_websocket_rate_limit(websocket, "WS_MESSAGE:/messages/ws"):
+                return
             try:
                 request_data = json.loads(data)
                 # Heartbeat ping — respond immediately and wait for next message
@@ -121,6 +140,8 @@ async def admin_websocket_endpoint(
     message_service: MessageService = Depends(get_message_service),
 ):
     """Admin WebSocket for human takeover and live conversation monitoring."""
+    if not await _enforce_websocket_rate_limit(websocket, "WS_CONNECT:/messages/ws/admin"):
+        return
     settings = get_settings()
     if not settings.ENABLE_HUMAN_TAKEOVER:
         await _close_websocket(websocket, "Human takeover is disabled")
@@ -135,6 +156,8 @@ async def admin_websocket_endpoint(
     try:
         while True:
             data = await websocket.receive_text()
+            if not await _enforce_websocket_rate_limit(websocket, "WS_MESSAGE:/messages/ws/admin"):
+                return
             try:
                 msg = json.loads(data)
             except json.JSONDecodeError:
@@ -227,6 +250,8 @@ async def widget_control_channel(
     - ping: heartbeat
     - user_message: forwarded to admin during human takeover, buffered, and persisted
     """
+    if not await _enforce_websocket_rate_limit(websocket, "WS_CONNECT:/messages/ws/widget"):
+        return
     settings = get_settings()
     if not settings.ENABLE_HUMAN_TAKEOVER:
         await _close_websocket(websocket, "Human takeover is disabled")
@@ -247,6 +272,8 @@ async def widget_control_channel(
     try:
         while True:
             data = await websocket.receive_text()
+            if not await _enforce_websocket_rate_limit(websocket, "WS_MESSAGE:/messages/ws/widget"):
+                return
             try:
                 msg = json.loads(data)
             except json.JSONDecodeError:
