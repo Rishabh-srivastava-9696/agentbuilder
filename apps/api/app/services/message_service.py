@@ -163,39 +163,7 @@ class MessageService:
             logger.warning("retrieval_pipeline_init_failed", error=str(e))
             self.retrieval_pipeline = None
         
-        # Initialize LLM provider (default to OpenAI for now)
-        provider_name = settings.DEFAULT_LLM_PROVIDER or "openai"
-        if provider_name == "openai":
-            api_key = settings.OPENAI_API_KEY
-            model = settings.OPENAI_MODEL
-            provider_kwargs = {"base_url": settings.OPENAI_BASE_URL}
-        elif provider_name == "azure_openai":
-            api_key = settings.AZURE_OPENAI_API_KEY
-            model = settings.AZURE_OPENAI_MODEL
-            provider_kwargs = {
-                "api_version": settings.AZURE_OPENAI_API_VERSION,
-                "azure_endpoint": settings.AZURE_OPENAI_ENDPOINT,
-                "deployment_name": settings.AZURE_OPENAI_DEPLOYMENT or settings.AZURE_OPENAI_MODEL,
-            }
-        elif provider_name == "qwen":
-            api_key = settings.QWEN_API_KEY
-            model = settings.QWEN_MODEL
-            provider_kwargs = {"base_url": settings.QWEN_BASE_URL}
-        else:
-            api_key = settings.OPENAI_API_KEY
-            model = settings.OPENAI_MODEL
-            provider_kwargs = {"base_url": settings.OPENAI_BASE_URL}
-            
-        try:
-            self.llm_provider = create_provider_from_env(
-                provider_name=provider_name,
-                api_key=api_key,
-                model=model,
-                **provider_kwargs,
-            )
-        except ValueError as e:
-            logger.error("llm_provider_init_failed", error=str(e))
-            raise
+        self.llm_provider = self._build_llm_provider()
         
         # Phase 4: Initialize response validator
         self.response_validator = ResponseValidator(strict_mode=True)
@@ -219,6 +187,44 @@ class MessageService:
         )
 
         logger.info("message_service_initialized", brand_id=self.brand_id)
+
+    def _build_llm_provider(self, provider_name: Optional[str] = None, model: Optional[str] = None):
+        """Build an LLM provider from env-backed credentials and optional agent overrides."""
+        resolved_provider = provider_name or self.settings.DEFAULT_LLM_PROVIDER or "openai"
+
+        if resolved_provider == "openai":
+            api_key = self.settings.OPENAI_API_KEY
+            resolved_model = model or self.settings.OPENAI_MODEL
+            provider_kwargs = {"base_url": self.settings.OPENAI_BASE_URL}
+        elif resolved_provider == "azure_openai":
+            api_key = self.settings.AZURE_OPENAI_API_KEY
+            resolved_model = model or self.settings.AZURE_OPENAI_MODEL
+            provider_kwargs = {
+                "api_version": self.settings.AZURE_OPENAI_API_VERSION,
+                "azure_endpoint": self.settings.AZURE_OPENAI_ENDPOINT,
+                "deployment_name": self.settings.AZURE_OPENAI_DEPLOYMENT or resolved_model,
+            }
+        elif resolved_provider == "qwen":
+            api_key = self.settings.QWEN_API_KEY
+            resolved_model = model or self.settings.QWEN_MODEL
+            provider_kwargs = {"base_url": self.settings.QWEN_BASE_URL}
+        else:
+            api_key = self.settings.OPENAI_API_KEY
+            resolved_model = model or self.settings.OPENAI_MODEL
+            provider_kwargs = {"base_url": self.settings.OPENAI_BASE_URL}
+
+        try:
+            provider = create_provider_from_env(
+                provider_name=resolved_provider,
+                api_key=api_key,
+                model=resolved_model,
+                **provider_kwargs,
+            )
+            logger.info("llm_provider_configured", provider=resolved_provider, model=resolved_model)
+            return provider
+        except ValueError as e:
+            logger.error("llm_provider_init_failed", provider=resolved_provider, model=resolved_model, error=str(e))
+            raise
     
     async def _initialize_brand_database(self, agent_id: str):
         """Initialize brand-specific database and memory system."""
@@ -315,6 +321,16 @@ class MessageService:
                 self.agent_config = config
                 self.system_prompt = agent.get("system_prompt", "")
                 self.brand_id = agent.get("brand_slug", self.brand_id)
+                llm_config = config.get("llm", {})
+                llm_provider_name = llm_config.get("provider")
+                llm_model = llm_config.get("model")
+                if llm_provider_name or llm_model:
+                    self.llm_provider = self._build_llm_provider(
+                        provider_name=llm_provider_name,
+                        model=llm_model,
+                    )
+                    if self.orchestrator:
+                        self.orchestrator.llm = self.llm_provider
                 
                 # Sync system prompt to Orchestrator
                 if self.orchestrator:
