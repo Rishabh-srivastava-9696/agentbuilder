@@ -170,6 +170,7 @@ class Settings(BaseSettings):
     
     # Security Configuration
     SECRET_KEY: str  # Required — set via SECRET_KEY env var or Azure Key Vault
+    SETTINGS_ENCRYPTION_KEY: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     # Simple admin API key for protecting write operations until JWT login UI is built.
     # Generate with: openssl rand -hex 32
