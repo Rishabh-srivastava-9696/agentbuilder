@@ -1,7 +1,43 @@
 import axios from 'axios';
 import { handleApiError } from './errorHandler';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+declare global {
+  interface Window {
+    __APP_CONFIG__?: {
+      API_BASE_URL?: string;
+    };
+  }
+}
+
+const runtimeConfig = window.__APP_CONFIG__ || {};
+const API_BASE_URL = runtimeConfig.API_BASE_URL || process.env.REACT_APP_API_URL || window.location.origin;
+const ADMIN_API_KEY_STORAGE_KEY = 'agentbuilder.admin_api_key';
+
+export function getAdminApiKey(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.sessionStorage.getItem(ADMIN_API_KEY_STORAGE_KEY) || '';
+}
+
+export function setAdminApiKey(value: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const trimmedValue = value.trim();
+  if (trimmedValue) {
+    window.sessionStorage.setItem(ADMIN_API_KEY_STORAGE_KEY, trimmedValue);
+    return;
+  }
+  window.sessionStorage.removeItem(ADMIN_API_KEY_STORAGE_KEY);
+}
+
+export function clearAdminApiKey(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.sessionStorage.removeItem(ADMIN_API_KEY_STORAGE_KEY);
+}
 
 // Create axios instance
 export const apiClient = axios.create({
@@ -9,6 +45,17 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+});
+
+apiClient.interceptors.request.use((config) => {
+  const adminApiKey = getAdminApiKey();
+  if (adminApiKey) {
+    config.headers = config.headers || {};
+    config.headers['X-Admin-Key'] = adminApiKey;
+  } else if (config.headers && 'X-Admin-Key' in config.headers) {
+    delete config.headers['X-Admin-Key'];
+  }
+  return config;
 });
 
 // Add response interceptor for consistent error handling
@@ -264,11 +311,11 @@ export const documentApi = {
 
   getKnowledgeDocuments: async (agentId?: string): Promise<KnowledgeDocument[]> => {
     const params = agentId ? { agent_id: agentId } : {};
-    console.log('🔍 Fetching documents with params:', params);
+    process.env.NODE_ENV !== 'production' && console.log('🔍 Fetching documents with params:', params);
     
     const response = await apiClient.get<{ documents: any[], count: number }>('/api/v1/ingest/documents', { params });
     
-    console.log('📥 Documents API response:', response.data);
+    process.env.NODE_ENV !== 'production' && console.log('📥 Documents API response:', response.data);
     
     // Transform API response to match KnowledgeDocument interface
     const transformed = response.data.documents.map((doc: any) => ({
@@ -288,7 +335,7 @@ export const documentApi = {
       updated_at: doc.created_at || new Date().toISOString(),
     }));
     
-    console.log('✨ Transformed documents:', transformed);
+    process.env.NODE_ENV !== 'production' && console.log('✨ Transformed documents:', transformed);
     return transformed;
   },
 

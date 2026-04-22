@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   HomeIcon,
@@ -6,6 +6,7 @@ import {
   CpuChipIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
+import { clearAdminApiKey, getAdminApiKey, setAdminApiKey } from '../api/client';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -20,6 +21,17 @@ const navigation = [
 
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
+  const [adminApiKey, setAdminApiKeyInput] = useState(() => getAdminApiKey());
+
+  const handleSaveAdminKey = () => {
+    setAdminApiKey(adminApiKey);
+    setAdminApiKeyInput(getAdminApiKey());
+  };
+
+  const handleClearAdminKey = () => {
+    clearAdminApiKey();
+    setAdminApiKeyInput('');
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -62,6 +74,40 @@ export default function Layout({ children }: LayoutProps) {
 
       {/* Main content */}
       <div className="pl-64">
+        <div className="border-b border-gray-200 bg-white">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+            <div>
+              <p className="text-sm font-semibold text-gray-900">Admin write access</p>
+              <p className="text-xs text-gray-500">
+                Enter the admin key for this browser session only. It is no longer shipped in runtime config.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                aria-label="Admin API key"
+                className="w-72 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                onChange={(event) => setAdminApiKeyInput(event.target.value)}
+                placeholder="Paste admin API key"
+                type="password"
+                value={adminApiKey}
+              />
+              <button
+                className="rounded-md bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800"
+                onClick={handleSaveAdminKey}
+                type="button"
+              >
+                Save
+              </button>
+              <button
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                onClick={handleClearAdminKey}
+                type="button"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
         <main className="py-8">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             {children}
