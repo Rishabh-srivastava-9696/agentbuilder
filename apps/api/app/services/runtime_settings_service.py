@@ -367,6 +367,17 @@ class RuntimeSettingsService:
             "default_deployment": values.get("azure_openai.deployment") or "",
         }
 
+    async def get_strapi_runtime_config(
+        self,
+        *,
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        values = await self.get_effective_values(overrides=overrides)
+        return {
+            "base_url": values.get("strapi.url") or "",
+            "api_token": values.get("strapi.api_token") or "",
+        }
+
     def _filtered_overrides(
         self,
         overrides: dict[str, Any] | None,
