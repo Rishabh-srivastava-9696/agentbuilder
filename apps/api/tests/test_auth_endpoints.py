@@ -152,6 +152,52 @@ def test_auth_config_exposes_signup_and_google_flags(monkeypatch):
     }
 
 
+def test_password_login_accepts_user_documents_with_object_ids(monkeypatch):
+    from app.api.v1.auth import login as login_module
+
+    user_id = ObjectId()
+    db = FakeDatabase(
+        users=[
+            {
+                "_id": user_id,
+                "email": "anant@fractics.com",
+                "username": "anant",
+                "password_hash": hash_password("Test@123"),
+                "full_name": "Anant",
+                "role": "admin",
+                "brands": [],
+                "is_active": True,
+                "is_verified": True,
+                "failed_login_attempts": 0,
+                "locked_until": None,
+                "last_login": None,
+                "created_at": "2026-04-23T00:00:00Z",
+                "updated_at": "2026-04-23T00:00:00Z",
+                "metadata": {},
+            }
+        ],
+        refresh_tokens=[],
+    )
+    client = build_client(db)
+
+    monkeypatch.setattr(
+        login_module,
+        "settings",
+        SimpleNamespace(ACCESS_TOKEN_EXPIRE_MINUTES=30),
+    )
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "anant@fractics.com", "password": "Test@123"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"]
+    assert payload["refresh_token"]
+    assert db.users.documents[0]["failed_login_attempts"] == 0
+
+
 def test_forgot_and_reset_password_flow(monkeypatch):
     from app.api.v1.auth import password_reset as reset_module
 

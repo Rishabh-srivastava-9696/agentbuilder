@@ -8,6 +8,7 @@ pydantic-settings>=2.2.1
 python-multipart>=0.0.9
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+bcrypt<5
 redis>=5.0.4
 motor>=3.4.0
 pymongo>=4.7.2
