@@ -50,6 +50,28 @@ export interface DocumentSummary {
   item_count: number;       // Number of unique products/dealers in this batch
   created_at?: string;
   is_legacy?: boolean;      // True for old documents without job_id
+  status?: 'ready' | 'processing' | 'error';
+}
+
+export interface DocumentPreviewSample {
+  chunk_id?: string;
+  title?: string;
+  content?: string;
+  content_type?: string;
+  product_data?: ProductData;
+  dealer_data?: DealerData;
+  metadata?: Record<string, any>;
+}
+
+export interface DocumentPreview {
+  doc_id: string;
+  title: string;
+  content_type: string;
+  item_count: number;
+  chunks_count: number;
+  created_at?: string;
+  status: 'ready' | 'processing' | 'error';
+  samples: DocumentPreviewSample[];
 }
 
 export interface UploadDocumentRequest {

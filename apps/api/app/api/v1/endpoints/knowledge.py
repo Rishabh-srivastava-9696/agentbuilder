@@ -395,6 +395,41 @@ async def list_documents(
         raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
 
 
+@router.get("/documents/{doc_id}/preview")
+async def get_document_preview(
+    doc_id: str,
+    brand_id: str,
+    limit: int = 8,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+):
+    """
+    Fetch source metadata and sample chunks/items for preview.
+
+    Query parameters:
+    - brand_id: Brand/agent ID or slug for authorization and DB resolution
+    - limit: Maximum number of sample chunks/items to return
+    """
+    try:
+        preview = await knowledge_service.get_document_preview(
+            doc_id=doc_id,
+            brand_id=brand_id,
+            limit=limit,
+        )
+
+        if not preview:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+        return {
+            "success": True,
+            "document": preview,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to preview document", doc_id=doc_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to preview document: {str(e)}")
+
+
 @router.delete("/documents/{doc_id}")
 async def delete_document(
     doc_id: str,

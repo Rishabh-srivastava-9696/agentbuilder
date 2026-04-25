@@ -143,12 +143,55 @@ class AzureOpenAIDeploymentService:
         deployments.sort(key=lambda deployment: deployment["deployment_name"].lower())
         return deployments
 
+    async def _fallback_deployment_response(self, arm_config: dict[str, str]) -> dict[str, Any]:
+        runtime_config = await self.runtime_settings_service.get_llm_runtime_config(
+            provider_name="azure_openai"
+        )
+        deployment_name = (
+            arm_config.get("default_deployment")
+            or runtime_config.get("deployment_name")
+            or runtime_config.get("model")
+            or ""
+        )
+        model_name = runtime_config.get("model") or deployment_name
+        deployments = []
+        if deployment_name:
+            deployments.append(
+                {
+                    "deployment_name": deployment_name,
+                    "model_name": model_name,
+                    "model_version": None,
+                    "provisioning_state": "Configured",
+                    "sku_name": None,
+                }
+            )
+
+        return {
+            "provider": "azure_openai",
+            "default_deployment": deployment_name or None,
+            "deployments": deployments,
+        }
+
     async def list_deployments(self) -> dict[str, Any]:
         arm_config = await self.runtime_settings_service.get_azure_arm_config()
         self._arm_config = arm_config
-        self._ensure_arm_config(arm_config)
-        payload = await self._fetch_deployments_payload()
+        fallback_response = await self._fallback_deployment_response(arm_config)
+
+        try:
+            self._ensure_arm_config(arm_config)
+            payload = await self._fetch_deployments_payload()
+        except (AzureDeploymentConfigError, AzureDeploymentAuthError, AzureDeploymentRequestError) as exc:
+            logger.warning(
+                "azure_deployments_discovery_fallback",
+                error=str(exc),
+                fallback_count=len(fallback_response["deployments"]),
+            )
+            return fallback_response
+
         deployments = self._parse_deployments(payload)
+        if not deployments:
+            return fallback_response
+
         return {
             "provider": "azure_openai",
             "default_deployment": arm_config.get("default_deployment") or None,

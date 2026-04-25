@@ -629,6 +629,88 @@ class KnowledgeService:
         )
         
         return documents[skip:skip + limit]
+
+    async def get_document_preview(
+        self,
+        doc_id: str,
+        brand_id: str,
+        limit: int = 8,
+    ) -> Dict[str, Any]:
+        """Fetch source metadata plus representative chunks/items for preview."""
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        brand_aliases = brand_scope.get("aliases") or [brand_id]
+        brand_match = {
+            "$or": [
+                {"metadata.brand_id": {"$in": brand_aliases}},
+                {"metadata.brand_slug": {"$in": brand_aliases}},
+            ]
+        }
+        source_match = {
+            "$or": [
+                {"metadata.job_id": doc_id},
+                {"doc_id": doc_id},
+            ]
+        }
+        query = {"$and": [brand_match, source_match]}
+
+        chunks: List[Dict[str, Any]] = []
+        seen_chunk_ids = set()
+        item_keys = set()
+        total_chunks = 0
+        collections = await self._get_brand_knowledge_collections(brand_id)
+
+        for collection in collections:
+            total_chunks += await collection.count_documents(query)
+            for item_key in await collection.distinct("doc_id", query):
+                if item_key:
+                    item_keys.add(item_key)
+
+        for collection in collections:
+            cursor = collection.find(query).sort("metadata.chunk_index", 1).limit(limit)
+            async for doc in cursor:
+                chunk_id = doc.get("chunk_id") or str(doc.get("_id"))
+                if chunk_id in seen_chunk_ids:
+                    continue
+                seen_chunk_ids.add(chunk_id)
+                chunks.append(doc)
+                if len(chunks) >= limit:
+                    break
+            if len(chunks) >= limit:
+                break
+
+        if not chunks:
+            return {}
+
+        first = chunks[0]
+        samples = []
+        for chunk in chunks:
+            sample: Dict[str, Any] = {
+                "chunk_id": chunk.get("chunk_id"),
+                "title": chunk.get("title"),
+                "content": chunk.get("content"),
+                "content_type": chunk.get("content_type"),
+                "metadata": {
+                    key: value
+                    for key, value in (chunk.get("metadata") or {}).items()
+                    if key not in {"brand_id", "brand_slug"}
+                },
+            }
+            if chunk.get("product_data"):
+                sample["product_data"] = chunk.get("product_data")
+            if chunk.get("dealer_data"):
+                sample["dealer_data"] = chunk.get("dealer_data")
+            samples.append(sample)
+
+        return {
+            "doc_id": doc_id,
+            "title": first.get("title") or doc_id,
+            "content_type": first.get("content_type"),
+            "item_count": len(item_keys) or len(samples),
+            "chunks_count": total_chunks or len(seen_chunk_ids),
+            "created_at": (first.get("metadata") or {}).get("created_at"),
+            "status": "ready",
+            "samples": samples,
+        }
     
     async def delete_document(self, doc_id: str, brand_id: str) -> bool:
         """Delete a document (or job batch) by ID."""

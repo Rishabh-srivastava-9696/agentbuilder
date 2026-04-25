@@ -1,6 +1,7 @@
 import { apiClient } from './client';
 import type { 
   KnowledgeDocument,
+  DocumentPreview,
   DocumentSummary,
   UploadDocumentRequest, 
   UploadDocumentResponse,
@@ -90,6 +91,18 @@ export const knowledgeApi = {
     );
 
     return response.data;
+  },
+
+  /**
+   * Get source metadata and representative records/chunks for preview
+   */
+  async getDocumentPreview(docId: string, brandId: string): Promise<DocumentPreview> {
+    const params = new URLSearchParams({ brand_id: brandId });
+    const response = await apiClient.get<{document: DocumentPreview}>(
+      `/api/v1/knowledge/documents/${docId}/preview?${params.toString()}`
+    );
+
+    return response.data.document;
   },
 
   /**
