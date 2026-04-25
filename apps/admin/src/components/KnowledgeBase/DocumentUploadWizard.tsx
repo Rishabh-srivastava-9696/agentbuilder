@@ -3,7 +3,7 @@ import JsonUpload from './JsonUpload';
 import ContentTypeSelector from './ContentTypeSelector';
 import JsonFieldMapper from './JsonFieldMapper';
 import { knowledgeApi } from '../../api/knowledge';
-import type { ContentType } from '../../types/knowledge';
+import type { ContentType, UploadDocumentResponse } from '../../types/knowledge';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -22,7 +22,7 @@ const steps: WizardStep[] = [
 
 interface DocumentUploadWizardProps {
   brandId: string;
-  onComplete: () => void;
+  onComplete: (response: UploadDocumentResponse) => void;
   onCancel: () => void;
 }
 
@@ -135,14 +135,7 @@ export default function DocumentUploadWizard({
       });
 
       isDev && console.log('[Upload] API response received:', response);
-      alert(
-        `✅ Success! Upload completed.\n\n` +
-        `Job ID: ${response.job_id}\n` +
-        `Uploaded: ${mappedData.length} ${contentType}s\n` +
-        `Status: Processing embeddings...`
-      );
-
-      onComplete();
+      onComplete(response);
     } catch (error: any) {
       console.error('Upload failed:', error);
       

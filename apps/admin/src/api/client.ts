@@ -244,6 +244,7 @@ export interface Brand {
 export interface Agent {
   id: string;
   brand_id: string;
+  brand_slug?: string;
   name: string;
   slug: string;
   description: string;

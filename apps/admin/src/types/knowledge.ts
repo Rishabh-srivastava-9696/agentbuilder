@@ -67,3 +67,16 @@ export interface UploadDocumentResponse {
   items_count: number;
   status: string;
 }
+
+export interface UploadJobStatus {
+  job_id: string;
+  status: 'pending' | 'processing' | 'completed' | 'error';
+  progress: {
+    type?: string;
+    processed_items?: number;
+    total_items?: number;
+    processed_chunks?: number;
+    total_chunks?: number;
+  };
+  error?: string;
+}

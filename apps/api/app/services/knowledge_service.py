@@ -29,6 +29,7 @@ class KnowledgeService:
         self.runtime_settings_service = RuntimeSettingsService(settings)
         self.mongo_client = None
         self.db_cache = {}  # Cache brand-specific databases
+        self.brand_scope_cache = {}
         self.db = None
         self.collection = None
 
@@ -39,12 +40,82 @@ class KnowledgeService:
             "model": config["model"],
         }
     
+    async def _resolve_brand_scope(self, identifier: str) -> Dict[str, Any]:
+        """Resolve a brand UUID, brand slug, or agent ID into DB name and query aliases."""
+        if identifier in self.brand_scope_cache:
+            return self.brand_scope_cache[identifier]
+
+        aliases: List[str] = []
+
+        def add_alias(value: Optional[str]) -> None:
+            if value and value not in aliases:
+                aliases.append(value)
+
+        add_alias(identifier)
+        brand_slug: Optional[str] = None
+        canonical_brand_id: Optional[str] = None
+
+        try:
+            system_db = connection_manager.get_system_db()
+
+            brand = await system_db.brands.find_one({
+                "$or": [
+                    {"id": identifier},
+                    {"slug": identifier},
+                ]
+            })
+            if brand:
+                canonical_brand_id = brand.get("id")
+                brand_slug = brand.get("slug") or brand.get("id")
+                add_alias(canonical_brand_id)
+                add_alias(brand_slug)
+
+            agent = await system_db.agents.find_one({"id": identifier})
+            if agent:
+                add_alias(agent.get("id"))
+                add_alias(agent.get("brand_id"))
+                add_alias(agent.get("brand_slug"))
+                if not canonical_brand_id:
+                    canonical_brand_id = agent.get("brand_id")
+                if not brand_slug:
+                    brand_slug = agent.get("brand_slug")
+
+                if agent.get("brand_id") or agent.get("brand_slug"):
+                    agent_brand = await system_db.brands.find_one({
+                        "$or": [
+                            {"id": agent.get("brand_id")},
+                            {"slug": agent.get("brand_slug")},
+                        ]
+                    })
+                    if agent_brand:
+                        canonical_brand_id = agent_brand.get("id") or canonical_brand_id
+                        brand_slug = agent_brand.get("slug") or brand_slug
+                        add_alias(canonical_brand_id)
+                        add_alias(brand_slug)
+        except Exception as exc:
+            logger.warning("brand_scope_resolution_failed", identifier=identifier, error=str(exc))
+
+        primary_db_key = brand_slug or identifier
+        scope = {
+            "identifier": identifier,
+            "brand_id": canonical_brand_id or identifier,
+            "brand_slug": brand_slug,
+            "aliases": aliases,
+            "db_name": primary_db_key.replace('.', '_')[:63],
+        }
+
+        for alias in aliases:
+            self.brand_scope_cache[alias] = scope
+        self.brand_scope_cache[identifier] = scope
+        return scope
+
     async def _get_brand_database(self, brand_id: str):
         """
         Get brand-specific database.
         
-        If brand_id looks like a UUID (agent_id), resolve it to brand_slug first.
-        Otherwise, assume it's already a brand_slug.
+        Accepts a brand UUID, brand slug, or agent ID and resolves to the
+        canonical brand database. This keeps old rows visible even when callers
+        switch between UUID and slug identifiers.
         """
         # Check if already cached
         if brand_id in self.db_cache:
@@ -55,27 +126,40 @@ class KnowledgeService:
         if not mongo_client:
             raise RuntimeError("MongoDB not connected")
         
-        # Determine if brand_id is agent_id (UUID format) or brand_slug
-        brand_slug = brand_id
-        
-        # If it looks like a UUID, resolve agent -> brand_slug
-        if len(brand_id) == 36 and brand_id.count('-') == 4:
-            # It's likely an agent_id, resolve to brand_slug
-            system_db = connection_manager.get_system_db()
-            agent = await system_db.agents.find_one({'id': brand_id})
-            if agent and agent.get('brand_slug'):
-                brand_slug = agent['brand_slug']
-                logger.info("resolved_agent_to_brand", agent_id=brand_id, brand_slug=brand_slug)
-            else:
-                logger.warning("agent_not_found_or_no_brand_slug", brand_id=brand_id)
-                # Fallback to using brand_id as-is (old behavior for backward compat)
-        
-        # Get brand database using the resolved brand_slug
-        db_name = brand_slug.replace('.', '_')[:63]  # MongoDB db name max 63 chars
+        scope = await self._resolve_brand_scope(brand_id)
+        db_name = scope["db_name"]
         self.db_cache[brand_id] = mongo_client[db_name]
-        logger.info("brand_database_accessed", brand_id=brand_id, brand_slug=brand_slug, db_name=db_name)
+        logger.info(
+            "brand_database_accessed",
+            brand_id=brand_id,
+            brand_slug=scope.get("brand_slug"),
+            aliases=scope.get("aliases"),
+            db_name=db_name,
+        )
         
         return self.db_cache[brand_id]
+
+    async def _get_brand_knowledge_collections(self, brand_id: str):
+        """Return canonical and legacy knowledge collections for a brand scope."""
+        mongo_client = connection_manager.mongodb_client
+        if not mongo_client:
+            raise RuntimeError("MongoDB not connected")
+
+        scope = await self._resolve_brand_scope(brand_id)
+        db_names: List[str] = []
+
+        def add_db_name(value: Optional[str]) -> None:
+            if not value:
+                return
+            db_name = value.replace('.', '_')[:63]
+            if db_name not in db_names:
+                db_names.append(db_name)
+
+        add_db_name(scope.get("db_name"))
+        for alias in scope.get("aliases", []):
+            add_db_name(alias)
+
+        return [mongo_client[db_name]["knowledge_base"] for db_name in db_names]
     
     async def _ensure_connection(self, brand_id: Optional[str] = None):
         """Ensure MongoDB connection is established for specific brand."""
@@ -179,6 +263,7 @@ class KnowledgeService:
         """Process a document upload in background."""
         try:
             await self._ensure_connection(brand_id)  # Use brand-specific database
+            brand_scope = await self._resolve_brand_scope(brand_id)
             await self.job_store.update(job_id, {"status": "processing"})
 
             # Extract text from document
@@ -207,8 +292,10 @@ class KnowledgeService:
                     # Enhanced metadata
                     "content_type": kb_content_type,  # product, dealer, faq, etc.
                     "metadata": {
-                        "brand_id": brand_id,
+                        "brand_id": brand_scope.get("brand_id") or brand_id,
+                        "brand_slug": brand_scope.get("brand_slug"),
                         "filename": filename,
+                        "job_id": job_id,
                         "chunk_index": i,
                         "total_chunks": len(chunks),
                         "created_at": datetime.utcnow().isoformat()
@@ -272,13 +359,14 @@ class KnowledgeService:
         """Process bulk JSON upload in background."""
         try:
             await self._ensure_connection(brand_id)  # Use brand-specific database
+            brand_scope = await self._resolve_brand_scope(brand_id)
             await self.job_store.update(job_id, {"status": "processing"})
 
             for i, item in enumerate(items):
                 if content_type == "product":
-                    await self._process_product_item(item, brand_id, job_id)
+                    await self._process_product_item(item, brand_id, job_id, brand_scope)
                 elif content_type == "dealer":
-                    await self._process_dealer_item(item, brand_id, job_id)
+                    await self._process_dealer_item(item, brand_id, job_id, brand_scope)
 
                 # Update progress
                 await self.job_store.update(job_id, {"processed_items": i + 1})
@@ -295,7 +383,7 @@ class KnowledgeService:
             await self.job_store.update(job_id, {"status": "error", "error": str(e)})
             logger.error("Bulk upload failed", job_id=job_id, error=str(e))
     
-    async def _process_product_item(self, item: Any, brand_id: str, job_id: str):
+    async def _process_product_item(self, item: Any, brand_id: str, job_id: str, brand_scope: Optional[Dict[str, Any]] = None):
         """Process a single product item."""
         # Generate text description for embedding
         text_parts = [
@@ -343,7 +431,8 @@ class KnowledgeService:
                     "features": item.features or []
                 },
                 "metadata": {
-                    "brand_id": brand_id,
+                    "brand_id": (brand_scope or {}).get("brand_id") or brand_id,
+                    "brand_slug": (brand_scope or {}).get("brand_slug"),
                     "job_id": job_id,  # Track which upload batch this belongs to
                     "chunk_index": i,
                     "total_chunks": len(chunks),
@@ -362,7 +451,7 @@ class KnowledgeService:
             job = await self.job_store.get(job_id) or {}
             await self.job_store.update(job_id, {"processed_chunks": job.get("processed_chunks", 0) + 1})
     
-    async def _process_dealer_item(self, item: Any, brand_id: str, job_id: str):
+    async def _process_dealer_item(self, item: Any, brand_id: str, job_id: str, brand_scope: Optional[Dict[str, Any]] = None):
         """Process a single dealer item."""
         # Generate text description for embedding
         text_parts = [
@@ -412,7 +501,8 @@ class KnowledgeService:
                     "address": item.address
                 },
                 "metadata": {
-                    "brand_id": brand_id,
+                    "brand_id": (brand_scope or {}).get("brand_id") or brand_id,
+                    "brand_slug": (brand_scope or {}).get("brand_slug"),
                     "job_id": job_id,  # Track which upload batch this belongs to
                     "chunk_index": i,
                     "total_chunks": len(chunks),
@@ -444,12 +534,14 @@ class KnowledgeService:
     ) -> List[Dict]:
         """List documents grouped by upload job (not individual products/chunks)."""
         await self._ensure_connection(brand_id)  # Use brand-specific database
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        brand_aliases = brand_scope.get("aliases") or [brand_id]
         
         # Build query - check both brand_id and brand_slug for compatibility
         brand_filter = {
             "$or": [
-                {"metadata.brand_id": brand_id},
-                {"metadata.brand_slug": brand_id}
+                {"metadata.brand_id": {"$in": brand_aliases}},
+                {"metadata.brand_slug": {"$in": brand_aliases}},
             ]
         }
         
@@ -465,8 +557,8 @@ class KnowledgeService:
         
         logger.info("list_documents_query", brand_id=brand_id, query=query, content_type=content_type)
         
-        # Aggregate to group by job_id (upload batch)
-        # For old documents without job_id, group by doc_id instead
+        # Aggregate to group by job_id (upload batch).
+        # For old documents without job_id, group by doc_id instead.
         pipeline = [
             {"$match": query},
             {
@@ -509,44 +601,65 @@ class KnowledgeService:
                     }
                 }
             },
-            {"$sort": {"created_at": -1}},
-            {"$skip": skip},
-            {"$limit": limit}
         ]
         
-        cursor = self.collection.aggregate(pipeline)
-        documents = []
-        async for doc in cursor:
-            documents.append({
-                "doc_id": doc["job_id"] or "unknown",  # Use job_id as doc_id
-                "title": doc.get("title", "Uploaded items"),
-                "content_type": doc.get("content_type"),
-                "chunks_count": doc.get("total_chunks", 0),
-                "item_count": doc.get("item_count", 0),  # Number of products/dealers in this upload
-                "created_at": doc.get("created_at"),
-                "is_legacy": doc.get("has_job_id") is None,  # Flag for old documents
-            })
+        documents_by_id: Dict[str, Dict[str, Any]] = {}
+        for collection in await self._get_brand_knowledge_collections(brand_id):
+            cursor = collection.aggregate(pipeline)
+            async for doc in cursor:
+                doc_id = doc["job_id"] or "unknown"
+                existing = documents_by_id.get(doc_id)
+                if existing and existing.get("chunks_count", 0) >= doc.get("total_chunks", 0):
+                    continue
+
+                documents_by_id[doc_id] = {
+                    "doc_id": doc["job_id"] or "unknown",  # Use job_id as doc_id
+                    "title": doc.get("title", "Uploaded items"),
+                    "content_type": doc.get("content_type"),
+                    "chunks_count": doc.get("total_chunks", 0),
+                    "item_count": doc.get("item_count", 0),  # Number of products/dealers in this upload
+                    "created_at": doc.get("created_at"),
+                    "is_legacy": doc.get("has_job_id") is None,  # Flag for old documents
+                }
         
-        return documents
+        documents = sorted(
+            documents_by_id.values(),
+            key=lambda doc: doc.get("created_at") or "",
+            reverse=True,
+        )
+        
+        return documents[skip:skip + limit]
     
     async def delete_document(self, doc_id: str, brand_id: str) -> bool:
         """Delete a document (or job batch) by ID."""
         await self._ensure_connection(brand_id)  # Use brand-specific database
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        brand_aliases = brand_scope.get("aliases") or [brand_id]
         
-        # First try deleting by job_id (new documents)
-        result = await self.collection.delete_many({
-            "metadata.job_id": doc_id,
-            "metadata.brand_id": brand_id
-        })
-        
-        # If nothing was deleted, try doc_id (old documents without job_id)
-        if result.deleted_count == 0:
-            result = await self.collection.delete_many({
-                "doc_id": doc_id,
-                "metadata.brand_id": brand_id
+        deleted_count = 0
+        for collection in await self._get_brand_knowledge_collections(brand_id):
+            # First try deleting by job_id (new documents)
+            result = await collection.delete_many({
+                "metadata.job_id": doc_id,
+                "$or": [
+                    {"metadata.brand_id": {"$in": brand_aliases}},
+                    {"metadata.brand_slug": {"$in": brand_aliases}},
+                ]
             })
+            deleted_count += result.deleted_count
         
-        return result.deleted_count > 0
+            # If nothing was deleted, try doc_id (old documents without job_id)
+            if result.deleted_count == 0:
+                result = await collection.delete_many({
+                    "doc_id": doc_id,
+                    "$or": [
+                        {"metadata.brand_id": {"$in": brand_aliases}},
+                        {"metadata.brand_slug": {"$in": brand_aliases}},
+                    ]
+                })
+                deleted_count += result.deleted_count
+        
+        return deleted_count > 0
     
     # ========================================================================
     # Helper Methods

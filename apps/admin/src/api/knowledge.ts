@@ -4,6 +4,7 @@ import type {
   DocumentSummary,
   UploadDocumentRequest, 
   UploadDocumentResponse,
+  UploadJobStatus,
   ContentType,
   ProductData,
   DealerData
@@ -59,18 +60,7 @@ export const knowledgeApi = {
   /**
    * Get upload job status
    */
-  async getJobStatus(jobId: string): Promise<{
-    job_id: string;
-    status: 'pending' | 'processing' | 'completed' | 'error';
-    progress: {
-      type?: string;
-      processed_items?: number;
-      total_items?: number;
-      processed_chunks?: number;
-      total_chunks?: number;
-    };
-    error?: string;
-  }> {
+  async getJobStatus(jobId: string): Promise<UploadJobStatus> {
     const response = await apiClient.get(`/api/v1/knowledge/jobs/${jobId}`);
     return response.data;
   },

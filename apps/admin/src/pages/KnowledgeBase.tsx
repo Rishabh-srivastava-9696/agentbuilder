@@ -11,7 +11,6 @@ export default function KnowledgeBase() {
   const handleUploadComplete = () => {
     setShowWizard(false);
     // TODO: Refresh document list
-    alert('Document uploaded successfully!');
   };
 
   if (showWizard) {
