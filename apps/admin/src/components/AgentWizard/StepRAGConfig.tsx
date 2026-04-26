@@ -13,6 +13,8 @@ interface StepRAGConfigProps {
     rerank_enabled: boolean;
     rerank_top_k: number;
     context_window: number;
+    data_source_policy: string;
+    runtime_variables_schema: string;
   };
   brandId?: string;
   onChange: (field: string, value: string | number | boolean) => void;
@@ -334,6 +336,48 @@ export default function StepRAGConfig({ data, brandId, onChange }: StepRAGConfig
         </div>
       )}
 
+      <div className="space-y-6 border-t border-gray-200 pt-6">
+        <div>
+          <h4 className="text-md font-medium text-gray-900">Data Source Policy</h4>
+          <p className="mt-1 text-sm text-gray-600">
+            Define which approved sources this agent can use for different tasks.
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="data_source_policy" className="block text-sm font-medium text-gray-700">
+            knowledge/index.yaml policy
+          </label>
+          <textarea
+            id="data_source_policy"
+            rows={8}
+            value={data.data_source_policy}
+            onChange={(e) => onChange('data_source_policy', e.target.value)}
+            className="mt-1 block w-full rounded-md border-gray-300 font-mono text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500"
+            spellCheck={false}
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            JSON is recommended. Plain text is also accepted and will be stored as a policy note.
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="runtime_variables_schema" className="block text-sm font-medium text-gray-700">
+            Runtime variable schema
+          </label>
+          <textarea
+            id="runtime_variables_schema"
+            rows={8}
+            value={data.runtime_variables_schema}
+            onChange={(e) => onChange('runtime_variables_schema', e.target.value)}
+            className="mt-1 block w-full rounded-md border-gray-300 font-mono text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500"
+            spellCheck={false}
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            These variables are appended at request time, keeping the main prompt stable for caching.
+          </p>
+        </div>
+      </div>
 
     </div>
   );

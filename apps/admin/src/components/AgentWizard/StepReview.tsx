@@ -5,6 +5,20 @@ import { getModelLabel, getProviderLabel } from '../../utils/llmOptions';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
+function parseStructuredPreview(value: any, fallback: any): any {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  if (typeof value !== 'string') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 interface StepReviewProps {
   data: any;
   onTest: () => void;
@@ -76,11 +90,14 @@ export default function StepReview({
         description: data.description
       },
       "RULES.md": {
-        rate_limiting: data.rate_limiting,
-        content_filtering: data.content_filtering,
-        session_timeout_minutes: data.session_timeout,
-        max_conversation_length: data.max_conversation_length,
-        human_takeover: data.human_takeover
+        behavior: parseStructuredPreview(data.prompt_rules, {}),
+        runtime_controls: {
+          rate_limiting: data.rate_limiting,
+          content_filtering: data.content_filtering,
+          session_timeout_minutes: data.session_timeout,
+          max_conversation_length: data.max_conversation_length,
+          human_takeover: data.human_takeover
+        }
       },
       "tools/": {
         data_source: data.data_source,
@@ -88,6 +105,7 @@ export default function StepReview({
         shopify: data.data_source === 'shopify'
       },
       "knowledge/index.yaml": {
+        data_source_policy: parseStructuredPreview(data.data_source_policy, {}),
         rag: data.rag_enabled ? {
           enabled: true,
           embedding: {
@@ -112,6 +130,7 @@ export default function StepReview({
         documents: data.documents || []
       },
       "config/default.yaml": {
+        runtime_variables_schema: parseStructuredPreview(data.runtime_variables_schema, {}),
         file_upload: data.file_upload ? {
           enabled: true,
           allowed_types: data.allowed_file_types || [],

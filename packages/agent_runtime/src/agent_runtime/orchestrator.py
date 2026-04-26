@@ -52,6 +52,21 @@ class Orchestrator:
         self.critic = critic
         self.system_prompt = system_prompt or "You are a helpful AI assistant."
         self.max_iterations = 3  # Default max retries for critic loop
+
+    def _format_runtime_context(self, context: Optional[Dict]) -> str:
+        if not context:
+            return "None"
+
+        runtime_context = context.get("prompt_runtime") or {}
+        prompt_metadata = context.get("prompt_metadata") or {}
+        if not runtime_context and not prompt_metadata:
+            return "None"
+
+        safe_context = {
+            "prompt_metadata": prompt_metadata,
+            "runtime_variables": runtime_context,
+        }
+        return json.dumps(safe_context, indent=2, sort_keys=True, default=str)
         
     async def run(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None, context: Optional[Dict] = None) -> AgentResult:
         """
@@ -71,6 +86,7 @@ class Orchestrator:
                 formatted_msgs.append(f"{role}: {content}")
             if formatted_msgs:
                 history_text = "\n".join(formatted_msgs)
+        runtime_context_text = self._format_runtime_context(context)
         
         # 1. PLANNING PHASE
         tool_schemas = json.dumps(self.tools.get_tool_schemas(), indent=2)
@@ -85,6 +101,9 @@ You are now acting as the Planning Agent. Your goal is to break down the user's 
 
 Conversation History:
 {history_text}
+
+Runtime Context:
+{runtime_context_text}
 
 User Request: {query}
 

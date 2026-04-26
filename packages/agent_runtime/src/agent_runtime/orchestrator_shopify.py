@@ -34,6 +34,7 @@ class ShopifyOrchestrator(Orchestrator):
         self.checkout_url: Optional[str] = None
         self.cart_lines: List[Dict[str, Any]] = []
         self.conversation: List[Dict[str, Any]] = []
+        self.prompt_runtime_context: Dict[str, Any] = {}
 
     async def run(
         self, 
@@ -78,6 +79,7 @@ class ShopifyOrchestrator(Orchestrator):
         self.cart_lines = session_state.get("cart_lines", [])
         self.captured_ids = session_state.get("captured_ids", {})
         self.last_searched = session_state.get("last_searched", {})
+        self.prompt_runtime_context = (context or {}).get("prompt_runtime", {})
         
         self.conversation = []
         if chat_history:
@@ -456,6 +458,9 @@ You are a Shopify assistant. You help users find products and manage their shopp
 Current Cart ID: {self.cart_id or "None"}
 {f"Checkout URL: {self.checkout_url}" if self.checkout_url else ""}
 {self._get_cart_lines_context()}
+
+Runtime Context:
+{json.dumps(self.prompt_runtime_context, indent=2, sort_keys=True, default=str) if self.prompt_runtime_context else "None"}
 
 ### STRICT TOOL-FIRST RULE
 **NEVER** return conversational text like "I will add that now" or "One moment please" if you haven't invoked the JSON tool call yet.

@@ -14,6 +14,7 @@ interface StepFeaturesProps {
     max_conversation_length: number;
     allowed_file_types: string[];
     max_file_size: number;
+    prompt_rules: string;
   };
   onChange: (field: string, value: string | number | boolean | string[]) => void;
 }
@@ -240,6 +241,24 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
             />
           </div>
         </div>
+      </div>
+
+      <div>
+        <h4 className="text-sm font-medium text-gray-900 mb-3">Behavior Rules / RULES.md</h4>
+        <label htmlFor="prompt_rules" className="sr-only">
+          Behavior rules
+        </label>
+        <textarea
+          id="prompt_rules"
+          rows={8}
+          value={data.prompt_rules}
+          onChange={(e) => onChange('prompt_rules', e.target.value)}
+          className="block w-full rounded-md border-gray-300 font-mono text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500"
+          spellCheck={false}
+        />
+        <p className="mt-1 text-xs text-gray-500">
+          JSON is recommended. Use this for grounding rules, escalation rules, and prompt-security rules.
+        </p>
       </div>
 
       {/* Session Configuration */}

@@ -39,6 +39,7 @@ from .response_validator import ResponseValidator  # Phase 4
 from .strapi_client import StrapiClient
 from .runtime_settings_service import RuntimeSettingsService
 from .observability_service import ObservabilityService
+from .prompt_assembler import PromptAssembler
 
 logger = structlog.get_logger(__name__)
 
@@ -183,7 +184,9 @@ class MessageService:
         # Agent configuration (will be loaded on first message)
         self.agent_config = None
         self.system_prompt = None
+        self.prompt_metadata: dict = {}
         self.runtime_settings_service = RuntimeSettingsService(settings)
+        self.prompt_assembler = PromptAssembler()
         
         # Memory system will be initialized after database is set
         self.memory_config = MemoryConfig()
@@ -480,8 +483,18 @@ class MessageService:
             
             if agent:
                 config = agent.get("configuration", {})
-                self.agent_config = config
-                self.system_prompt = agent.get("system_prompt", "")
+                normalized_prompt_layers = self.prompt_assembler.normalize_prompt_layers(agent, config)
+                self.agent_config = {
+                    **config,
+                    "prompt_layers": normalized_prompt_layers,
+                }
+                prompt_assembly = self.prompt_assembler.assemble_agent_prompt(agent, self.agent_config)
+                self.system_prompt = prompt_assembly.prompt
+                self.prompt_metadata = {
+                    "prompt_version": prompt_assembly.prompt_version,
+                    "cacheable_prefix_hash": prompt_assembly.cacheable_prefix_hash,
+                    "layers": prompt_assembly.layer_names,
+                }
                 self.brand_id = agent.get("brand_slug", self.brand_id)
                 llm_config = config.get("llm", {})
                 llm_provider_name = llm_config.get("provider")
@@ -499,7 +512,9 @@ class MessageService:
                 logger.info("agent_config_loaded", 
                            agent_id=agent_id, 
                            brand_id=self.brand_id,
-                           has_system_prompt=bool(self.system_prompt))
+                           has_system_prompt=bool(self.system_prompt),
+                           prompt_version=self.prompt_metadata.get("prompt_version"),
+                           prompt_hash=self.prompt_metadata.get("cacheable_prefix_hash"))
                            
                 # Initialize remote MCP tools if Shopify is selected
                 if config.get("data_source") == "shopify":
@@ -564,6 +579,7 @@ class MessageService:
                 logger.warning("agent_not_found", agent_id=agent_id)
                 self.agent_config = {}
                 self.system_prompt = ""
+                self.prompt_metadata = {}
                 await self._configure_runtime_dependencies(
                     brand_slug=self.brand_id,
                 )
@@ -572,8 +588,20 @@ class MessageService:
             logger.error("agent_config_load_error", error=str(e))
             self.agent_config = {}
             self.system_prompt = ""
+            self.prompt_metadata = {}
             if self.orchestrator:
                 self.orchestrator.system_prompt = ""
+
+    def _build_prompt_runtime_context(self, request: MessageRequest) -> dict:
+        """Build typed runtime variables that are appended after the stable prompt prefix."""
+        if not self.agent_config:
+            return {}
+
+        return self.prompt_assembler.build_runtime_context(
+            config=self.agent_config,
+            page_context=request.page_context,
+            filters=request.filters,
+        )
 
     
     async def process_message(self, request: MessageRequest) -> MessageResponse:
@@ -673,7 +701,12 @@ class MessageService:
                     if "last_searched" in meta:
                         session_state["last_searched"] = meta.get("last_searched", {})
 
-            context_dict = {"memory": memory_context, "session_state": session_state}
+            context_dict = {
+                "memory": memory_context,
+                "session_state": session_state,
+                "prompt_runtime": self._build_prompt_runtime_context(request),
+                "prompt_metadata": self.prompt_metadata,
+            }
             
             # 4. RUN SOTA ORCHESTRATOR LOOP
             # Instead of linear retrieve->generate, let the agent plan and execute.
@@ -688,7 +721,7 @@ class MessageService:
             else:
                 agent_result = await self.orchestrator.run(
                     query=request.message,
-                    context={"memory": memory_context}
+                    context=context_dict
                 )
             
             response_text, agent_metadata = self._apply_post_response_guardrails(
@@ -725,6 +758,9 @@ class MessageService:
                     "guardrail_reason": agent_metadata.get("guardrail_reason"),
                     "fallback_stage": agent_metadata.get("fallback_stage"),
                     "fallback_reason": agent_metadata.get("fallback_reason"),
+                    "prompt_version": self.prompt_metadata.get("prompt_version"),
+                    "prompt_hash": self.prompt_metadata.get("cacheable_prefix_hash"),
+                    "prompt_layers": self.prompt_metadata.get("layers", []),
                     "plan": agent_metadata.get("plan"),
                     "cart_id": saved_cart_id,
                     "captured_ids": agent_metadata.get("captured_ids"),
@@ -802,6 +838,9 @@ class MessageService:
                     "fallback_reason": agent_metadata.get("fallback_reason"),
                     "guardrail_action": agent_metadata.get("guardrail_action"),
                     "guardrail_reason": agent_metadata.get("guardrail_reason"),
+                    "prompt_version": self.prompt_metadata.get("prompt_version"),
+                    "prompt_hash": self.prompt_metadata.get("cacheable_prefix_hash"),
+                    "prompt_layers": self.prompt_metadata.get("layers", []),
                 },
             )
             MESSAGE_COUNT.labels(status=status_label).inc()
@@ -956,6 +995,12 @@ class MessageService:
                         session_state["captured_ids"] = meta.get("captured_ids", {})
                     if "last_searched" in meta:
                         session_state["last_searched"] = meta.get("last_searched", {})
+
+            prompt_context = {
+                "session_state": session_state,
+                "prompt_runtime": self._build_prompt_runtime_context(request),
+                "prompt_metadata": self.prompt_metadata,
+            }
             
             from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
             
@@ -971,7 +1016,7 @@ class MessageService:
                     self.orchestrator.run(
                         query=request.message,
                         chat_history=chat_history,
-                        context={"session_state": session_state},
+                        context=prompt_context,
                         on_status=on_status
                     )
                 )
@@ -996,7 +1041,7 @@ class MessageService:
                 agent_result = await self.orchestrator.run(
                     query=request.message,
                     chat_history=chat_history,
-                    context={"session_state": session_state}
+                    context=prompt_context
                 )
             
             # Extract final answer
@@ -1054,6 +1099,9 @@ class MessageService:
                     "guardrail_reason": agent_metadata.get("guardrail_reason"),
                     "fallback_stage": agent_metadata.get("fallback_stage"),
                     "fallback_reason": agent_metadata.get("fallback_reason"),
+                    "prompt_version": self.prompt_metadata.get("prompt_version"),
+                    "prompt_hash": self.prompt_metadata.get("cacheable_prefix_hash"),
+                    "prompt_layers": self.prompt_metadata.get("layers", []),
                     "plan": agent_metadata.get("plan"),
                     "cart_id": saved_cart_id,
                     "checkout_url": agent_metadata.get("checkout_url"),
@@ -1163,6 +1211,9 @@ class MessageService:
                     "fallback_reason": agent_metadata.get("fallback_reason"),
                     "guardrail_action": agent_metadata.get("guardrail_action"),
                     "guardrail_reason": agent_metadata.get("guardrail_reason"),
+                    "prompt_version": self.prompt_metadata.get("prompt_version"),
+                    "prompt_hash": self.prompt_metadata.get("cacheable_prefix_hash"),
+                    "prompt_layers": self.prompt_metadata.get("layers", []),
                 },
             )
             MESSAGE_COUNT.labels(status=status_label).inc()
