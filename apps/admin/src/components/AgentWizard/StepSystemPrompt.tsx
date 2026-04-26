@@ -110,9 +110,9 @@ export default function StepSystemPrompt({ data, onChange, brandVoice }: StepSys
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">System Prompt & Personality</h3>
+        <h3 className="text-lg font-medium text-gray-900">Soul</h3>
         <p className="mt-1 text-sm text-gray-600">
-          Define how your agent behaves and communicates with users.
+          Define the SOUL.md layer: identity, personality, tone, and communication style.
         </p>
       </div>
 

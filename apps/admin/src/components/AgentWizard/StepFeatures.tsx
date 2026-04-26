@@ -40,15 +40,15 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">Features & Security</h3>
+        <h3 className="text-lg font-medium text-gray-900">Rules & Compliance</h3>
         <p className="mt-1 text-sm text-gray-600">
-          Configure the features and security settings for your agent.
+          Configure runtime rules, compliance controls, and user-facing safety behavior.
         </p>
       </div>
 
       {/* Core Features */}
       <div>
-        <h4 className="text-sm font-medium text-gray-900 mb-3">Core Features</h4>
+        <h4 className="text-sm font-medium text-gray-900 mb-3">Runtime Rules</h4>
         <div className="space-y-3">
           <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
             <div>
@@ -200,9 +200,9 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
         )}
       </div>
 
-      {/* Security Settings */}
+      {/* Compliance Controls */}
       <div>
-        <h4 className="text-sm font-medium text-gray-900 mb-3">Security & Limits</h4>
+        <h4 className="text-sm font-medium text-gray-900 mb-3">Compliance Controls</h4>
         <div className="space-y-3">
           <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
             <div>
@@ -225,7 +225,7 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
           <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
             <div>
               <label htmlFor="content_filtering" className="text-sm font-medium text-gray-900">
-                Content Filtering
+                Content Filtering & Guardrails
               </label>
               <p className="text-xs text-gray-500">
                 Filter inappropriate content in user messages and agent responses
@@ -281,7 +281,7 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
         </div>
       </div>
 
-      {/* Feature Recommendations */}
+      {/* Rules Recommendations */}
       <div className="bg-green-50 border border-green-200 rounded-md p-4">
         <div className="flex">
           <div className="flex-shrink-0">
@@ -291,12 +291,12 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
           </div>
           <div className="ml-3">
             <h3 className="text-sm font-medium text-green-800">
-              Recommended Configuration
+              Recommended Rules
             </h3>
             <div className="mt-2 text-sm text-green-700">
               <ul className="list-disc pl-5 space-y-1">
                 <li><strong>Enable:</strong> WebSockets, Human Takeover, Response Streaming, Conversation Memory</li>
-                <li><strong>Security:</strong> Always enable Rate Limiting and Content Filtering</li>
+                <li><strong>Compliance:</strong> Always enable Rate Limiting and Content Filtering</li>
                 <li><strong>Session Timeout:</strong> 30-60 minutes for most use cases</li>
                 <li><strong>File Upload:</strong> Only enable if your agent needs to process documents</li>
                 <li><strong>Conversation Length:</strong> 50-100 messages for good performance</li>

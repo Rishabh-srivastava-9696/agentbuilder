@@ -16,9 +16,9 @@ export default function StepBasicInfo({ data, onChange, brands }: StepBasicInfoP
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">Basic Information</h3>
+        <h3 className="text-lg font-medium text-gray-900">Identity & Duties</h3>
         <p className="mt-1 text-sm text-gray-600">
-          Set up the fundamental details for your AI agent.
+          Define the agent identity, brand ownership, and role responsibilities that map to DUTIES.md.
         </p>
       </div>
 

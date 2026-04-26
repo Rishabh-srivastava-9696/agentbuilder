@@ -61,9 +61,9 @@ export default function StepLLMConfig({ data, onChange }: StepLLMConfigProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">LLM Configuration</h3>
+        <h3 className="text-lg font-medium text-gray-900">Model & Runtime</h3>
         <p className="mt-1 text-sm text-gray-600">
-          This dashboard now uses Azure OpenAI deployments discovered from the backend.
+          Configure the model/runtime values that would live in agent.yaml.
         </p>
       </div>
 

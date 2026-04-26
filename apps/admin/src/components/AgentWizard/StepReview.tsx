@@ -34,65 +34,95 @@ export default function StepReview({
   // Generate YAML configuration
   const generateYAML = () => {
     const config = {
-      agent: {
-        name: data.name,
-        description: data.description,
-        brand_id: data.brand_id,
-        version: "1.0.0"
-      },
-      llm: {
-        provider: data.provider,
-        model: data.model,
-        temperature: data.temperature,
-        max_tokens: data.max_tokens,
-        top_p: data.top_p,
-        frequency_penalty: data.frequency_penalty,
-        presence_penalty: data.presence_penalty
-      },
-      system_prompt: data.system_prompt,
-      personality: {
-        traits: data.personality_traits || [],
-        communication_style: data.communication_style,
-        response_format: data.response_format
-      },
-      rag: data.rag_enabled ? {
-        enabled: true,
-        embedding: {
-          provider: data.embedding_provider,
-          model: data.embedding_model
+      agent_package_version: 1,
+      "agent.yaml": {
+        agent: {
+          name: data.name,
+          description: data.description,
+          brand_id: data.brand_id,
+          brand_name: selectedBrand?.name,
+          purpose: data.purpose,
+          role: data.role,
+          version: "1.0.0"
         },
-        retrieval: {
-          top_k: data.top_k,
-          similarity_threshold: data.similarity_threshold,
-          context_window: data.context_window,
-          rerank: {
-            enabled: data.rerank_enabled,
-            top_k: data.rerank_top_k
-          }
+        model: {
+          provider: data.provider,
+          model: data.model,
+          temperature: data.temperature,
+          max_tokens: data.max_tokens,
+          top_p: data.top_p,
+          frequency_penalty: data.frequency_penalty,
+          presence_penalty: data.presence_penalty
         },
-        chunking: {
-          strategy: data.chunking_strategy,
-          chunk_size: data.chunk_size,
-          chunk_overlap: data.chunk_overlap
+        runtime: {
+          websockets: data.websockets,
+          conversation_memory: data.conversation_memory,
+          typing_indicators: data.typing_indicators,
+          response_streaming: data.response_streaming,
+          human_takeover: data.human_takeover
         }
-      } : { enabled: false },
-      features: {
-        websockets: data.websockets,
+      },
+      "SOUL.md": {
+        system_prompt: data.system_prompt,
+        personality: {
+          traits: data.personality_traits || [],
+          communication_style: data.communication_style,
+          response_format: data.response_format
+        }
+      },
+      "DUTIES.md": {
+        primary_purpose: data.purpose,
+        role: data.role,
+        description: data.description
+      },
+      "RULES.md": {
+        rate_limiting: data.rate_limiting,
+        content_filtering: data.content_filtering,
+        session_timeout_minutes: data.session_timeout,
+        max_conversation_length: data.max_conversation_length,
+        human_takeover: data.human_takeover
+      },
+      "tools/": {
+        data_source: data.data_source,
+        knowledge_search: data.rag_enabled,
+        shopify: data.data_source === 'shopify'
+      },
+      "knowledge/index.yaml": {
+        rag: data.rag_enabled ? {
+          enabled: true,
+          embedding: {
+            provider: data.embedding_provider,
+            model: data.embedding_model
+          },
+          retrieval: {
+            top_k: data.top_k,
+            similarity_threshold: data.similarity_threshold,
+            context_window: data.context_window,
+            rerank: {
+              enabled: data.rerank_enabled,
+              top_k: data.rerank_top_k
+            }
+          },
+          chunking: {
+            strategy: data.chunking_strategy,
+            chunk_size: data.chunk_size,
+            chunk_overlap: data.chunk_overlap
+          }
+        } : { enabled: false },
+        documents: data.documents || []
+      },
+      "config/default.yaml": {
         file_upload: data.file_upload ? {
           enabled: true,
           allowed_types: data.allowed_file_types || [],
           max_size_mb: data.max_file_size
-        } : { enabled: false },
-        conversation_memory: data.conversation_memory,
-        human_takeover: data.human_takeover,
-        typing_indicators: data.typing_indicators,
-        response_streaming: data.response_streaming
+        } : { enabled: false }
       },
-      security: {
+      "compliance/responsible-ai.yaml": {
         rate_limiting: data.rate_limiting,
         content_filtering: data.content_filtering,
-        session_timeout_minutes: data.session_timeout,
-        max_conversation_length: data.max_conversation_length
+        grounding_required: data.rag_enabled,
+        observability_ready: true
       }
     };
 
@@ -222,27 +252,27 @@ export default function StepReview({
   // Validation checks
   const validationChecks = [
     {
-      name: 'Basic Information',
+      name: 'Identity / DUTIES.md',
       valid: data.name && data.description && data.brand_id,
       message: data.name && data.description && data.brand_id ? 'Complete' : 'Missing required fields'
     },
     {
-      name: 'LLM Configuration',
+      name: 'Model & Runtime / agent.yaml',
       valid: !!data.model,
       message: data.model ? 'Azure deployment configured' : 'Azure deployment required'
     },
     {
-      name: 'System Prompt',
+      name: 'Soul / SOUL.md',
       valid: data.system_prompt && data.system_prompt.length > 50,
       message: data.system_prompt && data.system_prompt.length > 50 ? 'Detailed prompt provided' : 'System prompt too short'
     },
     {
-      name: 'RAG Setup',
+      name: 'Tools & Sources',
       valid: !data.rag_enabled || (data.embedding_provider && data.embedding_model),
       message: !data.rag_enabled ? 'RAG disabled' : (data.embedding_provider && data.embedding_model ? 'RAG configured' : 'RAG enabled but missing configuration')
     },
     {
-      name: 'Knowledge Base',
+      name: 'Knowledge / knowledge/',
       valid: !data.rag_enabled || data.documents?.length > 0,
       message: !data.rag_enabled ? 'Not using RAG' : (data.documents?.length > 0 ? `${data.documents.length} documents uploaded` : 'No documents uploaded')
     }
@@ -253,19 +283,19 @@ export default function StepReview({
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">Review & Deploy</h3>
+        <h3 className="text-lg font-medium text-gray-900">Package Review</h3>
         <p className="mt-1 text-sm text-gray-600">
-          Review your agent configuration and test it before deployment.
+          Review the live MongoDB-backed agent as a portable package-style summary before deployment.
         </p>
       </div>
 
       {/* Configuration Summary */}
       <div className="bg-white border border-gray-200 rounded-lg p-6">
-        <h4 className="text-base font-medium text-gray-900 mb-4">Configuration Summary</h4>
+        <h4 className="text-base font-medium text-gray-900 mb-4">Agent Package Summary</h4>
         
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <h5 className="text-sm font-medium text-gray-700">Basic Info</h5>
+            <h5 className="text-sm font-medium text-gray-700">DUTIES.md</h5>
             <div className="mt-1 text-sm text-gray-600">
               <p><strong>Name:</strong> {data.name || 'Not set'}</p>
               <p><strong>Brand:</strong> {selectedBrand?.name || 'Not selected'}</p>
@@ -274,7 +304,7 @@ export default function StepReview({
           </div>
 
           <div>
-            <h5 className="text-sm font-medium text-gray-700">LLM Settings</h5>
+            <h5 className="text-sm font-medium text-gray-700">agent.yaml</h5>
             <div className="mt-1 text-sm text-gray-600">
               <p><strong>Provider:</strong> {getProviderLabel(data.provider)}</p>
               <p><strong>Model:</strong> {getModelLabel(data.provider, data.model, deployments)}</p>
@@ -283,17 +313,26 @@ export default function StepReview({
           </div>
 
           <div>
-            <h5 className="text-sm font-medium text-gray-700">Features</h5>
+            <h5 className="text-sm font-medium text-gray-700">SOUL.md</h5>
             <div className="mt-1 text-sm text-gray-600">
-              <p><strong>RAG:</strong> {data.rag_enabled ? 'Enabled' : 'Disabled'}</p>
-              <p><strong>File Upload:</strong> {data.file_upload ? 'Enabled' : 'Disabled'}</p>
-              <p><strong>Human Takeover:</strong> {data.human_takeover ? 'Enabled' : 'Disabled'}</p>
-              <p><strong>Memory:</strong> {data.conversation_memory ? 'Enabled' : 'Disabled'}</p>
+              <p><strong>Prompt:</strong> {data.system_prompt ? `${data.system_prompt.length} characters` : 'Not set'}</p>
+              <p><strong>Traits:</strong> {data.personality_traits?.length || 0}</p>
+              <p><strong>Style:</strong> {data.communication_style || 'Not specified'}</p>
             </div>
           </div>
 
           <div>
-            <h5 className="text-sm font-medium text-gray-700">Security</h5>
+            <h5 className="text-sm font-medium text-gray-700">tools/ and knowledge/</h5>
+            <div className="mt-1 text-sm text-gray-600">
+              <p><strong>RAG:</strong> {data.rag_enabled ? 'Enabled' : 'Disabled'}</p>
+              <p><strong>Data Source:</strong> {data.data_source || 'none'}</p>
+              <p><strong>File Upload:</strong> {data.file_upload ? 'Enabled' : 'Disabled'}</p>
+              <p><strong>Documents:</strong> {data.documents?.length || 0}</p>
+            </div>
+          </div>
+
+          <div>
+            <h5 className="text-sm font-medium text-gray-700">RULES.md and compliance/</h5>
             <div className="mt-1 text-sm text-gray-600">
               <p><strong>Rate Limiting:</strong> {data.rate_limiting ? 'Enabled' : 'Disabled'}</p>
               <p><strong>Content Filter:</strong> {data.content_filtering ? 'Enabled' : 'Disabled'}</p>
@@ -385,13 +424,13 @@ export default function StepReview({
       {/* Configuration Export */}
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
-          <h4 className="text-base font-medium text-gray-900">Configuration Export</h4>
+          <h4 className="text-base font-medium text-gray-900">Portable Package Preview</h4>
           <div className="flex space-x-2">
             <button
               onClick={() => setShowYaml(!showYaml)}
               className="text-sm text-primary-600 hover:text-primary-800"
             >
-              {showYaml ? 'Hide' : 'Show'} Configuration
+              {showYaml ? 'Hide' : 'Show'} Package
             </button>
             <button
               onClick={copyToClipboard}

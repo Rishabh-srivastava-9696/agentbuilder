@@ -405,9 +405,9 @@ export default function StepKnowledgeBase({ data, onChange, agentId, brandId }: 
     <div className="space-y-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Knowledge Base</h2>
+          <h2 className="text-2xl font-bold text-gray-900">Knowledge</h2>
           <p className="mt-1 text-sm text-gray-600">
-            Verify uploaded sources, records, and chunks before moving to review.
+            Verify the knowledge/ workspace: uploaded sources, records, and chunks before moving to review.
           </p>
         </div>
         <button

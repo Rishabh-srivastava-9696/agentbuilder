@@ -159,13 +159,13 @@ const initialData: AgentData = {
 };
 
 const steps = [
-  { id: 1, name: 'Basic Info', description: 'Agent details and purpose' },
-  { id: 2, name: 'LLM Config', description: 'Language model settings' },
-  { id: 3, name: 'System Prompt', description: 'Agent personality and behavior' },
-  { id: 4, name: 'Data Source', description: 'Connect external knowledge' },
-  { id: 5, name: 'Knowledge Base', description: 'Upload and manage documents' },
-  { id: 6, name: 'Features', description: 'Features and security' },
-  { id: 7, name: 'Review', description: 'Test and deploy' },
+  { id: 1, name: 'Identity', description: 'DUTIES.md and agent role' },
+  { id: 2, name: 'Model & Runtime', description: 'agent.yaml settings' },
+  { id: 3, name: 'Soul', description: 'SOUL.md personality' },
+  { id: 4, name: 'Tools & Sources', description: 'tools/ and source config' },
+  { id: 5, name: 'Knowledge', description: 'knowledge/ workspace' },
+  { id: 6, name: 'Rules & Compliance', description: 'RULES.md and compliance/' },
+  { id: 7, name: 'Package Review', description: 'Portable agent summary' },
 ];
 
 export default function AgentWizard() {

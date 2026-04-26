@@ -83,9 +83,9 @@ export default function StepRAGConfig({ data, brandId, onChange }: StepRAGConfig
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium text-gray-900">Data Source Configuration</h3>
+        <h3 className="text-lg font-medium text-gray-900">Tools & Sources</h3>
         <p className="mt-1 text-sm text-gray-600">
-          Configure how your agent retrieves and uses knowledge to answer your users.
+          Configure source connections and retrieval tools that map to tools/ and agent.yaml.
         </p>
       </div>
 
