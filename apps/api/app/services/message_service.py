@@ -38,6 +38,7 @@ from ..monitoring import AGENT_FALLBACK_COUNT, GUARDRAIL_COUNT, MESSAGE_COUNT, M
 from .response_validator import ResponseValidator  # Phase 4
 from .strapi_client import StrapiClient
 from .runtime_settings_service import RuntimeSettingsService
+from .observability_service import ObservabilityService
 
 logger = structlog.get_logger(__name__)
 
@@ -231,6 +232,7 @@ class MessageService:
             base_url=settings.STRAPI_URL,
             api_token=settings.STRAPI_API_TOKEN,
         )
+        self.observability = ObservabilityService()
 
         logger.info("message_service_initialized", brand_id=self.brand_id)
 
@@ -312,6 +314,18 @@ class MessageService:
             assistant_message=response_text,
             brand_slug=self.brand_id,
             agent_id=agent_id,
+        )
+        await self.observability.track_event(
+            event_type="guardrail_decision",
+            brand_slug=self.brand_id,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            payload={
+                "action": decision["action"],
+                "reason": decision["reason"],
+                "mode": "sync",
+                "status": f"guardrail_{decision['action']}",
+            },
         )
         MESSAGE_COUNT.labels(status=f"guardrail_{decision['action']}").inc()
         return MessageResponse(
@@ -750,6 +764,46 @@ class MessageService:
                     stage=str(agent_metadata.get("fallback_stage", "unknown")),
                     reason=str(agent_metadata.get("fallback_reason", "unknown")),
                 ).inc()
+                await self.observability.track_event(
+                    event_type="fallback_used",
+                    brand_slug=self.brand_id,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    payload={
+                        "stage": str(agent_metadata.get("fallback_stage", "unknown")),
+                        "reason": str(agent_metadata.get("fallback_reason", "unknown")),
+                        "mode": "sync",
+                    },
+                )
+            confidence_score = min(
+                1.0,
+                max(0.0, float(agent_metadata.get("validation_confidence", 1.0))),
+            )
+            await self.observability.track_event(
+                event_type="message_processed",
+                brand_slug=self.brand_id,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                payload={
+                    "mode": "sync",
+                    "status": status_label,
+                    "latency_ms": duration_ms,
+                    "confidence_score": confidence_score,
+                    "validation_passed": agent_metadata.get("validation_passed"),
+                    "validation_issues": agent_metadata.get("validation_issues", []),
+                    "context_used": len(tool_results),
+                    "citations_count": len(citations),
+                    "grounded": bool(citations or tool_results),
+                    "low_confidence_prevented": (
+                        agent_metadata.get("guardrail_action") == "fallback"
+                        and agent_metadata.get("guardrail_reason") == "low_confidence"
+                    ),
+                    "fallback_stage": agent_metadata.get("fallback_stage"),
+                    "fallback_reason": agent_metadata.get("fallback_reason"),
+                    "guardrail_action": agent_metadata.get("guardrail_action"),
+                    "guardrail_reason": agent_metadata.get("guardrail_reason"),
+                },
+            )
             MESSAGE_COUNT.labels(status=status_label).inc()
             MESSAGE_DURATION.labels(mode="sync", status=status_label).observe(duration_ms / 1000)
                 
@@ -759,10 +813,7 @@ class MessageService:
                 conversation_id=conversation_id,
                 citations=citations,
                 context_used=len(tool_results),
-                confidence_score=min(
-                    1.0,
-                    max(0.0, float(agent_metadata.get("validation_confidence", 1.0))),
-                ),
+                confidence_score=confidence_score,
                 processing_time_ms=duration_ms,
             )
             
@@ -839,6 +890,18 @@ class MessageService:
                     assistant_message=response_text,
                     brand_slug=self.brand_id,
                     agent_id=agent_id,
+                )
+                await self.observability.track_event(
+                    event_type="guardrail_decision",
+                    brand_slug=self.brand_id,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    payload={
+                        "action": guardrail_decision["action"],
+                        "reason": guardrail_decision["reason"],
+                        "mode": "stream",
+                        "status": f"guardrail_{guardrail_decision['action']}",
+                    },
                 )
                 MESSAGE_COUNT.labels(status=f"guardrail_{guardrail_decision['action']}").inc()
                 yield StreamingMessageResponse(
@@ -1065,6 +1128,43 @@ class MessageService:
                     stage=str(agent_metadata.get("fallback_stage", "unknown")),
                     reason=str(agent_metadata.get("fallback_reason", "unknown")),
                 ).inc()
+                await self.observability.track_event(
+                    event_type="fallback_used",
+                    brand_slug=self.brand_id,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    payload={
+                        "stage": str(agent_metadata.get("fallback_stage", "unknown")),
+                        "reason": str(agent_metadata.get("fallback_reason", "unknown")),
+                        "mode": "stream",
+                    },
+                )
+            confidence_score = min(1.0, max(0.0, float(agent_metadata.get("validation_confidence", 1.0))))
+            await self.observability.track_event(
+                event_type="message_processed",
+                brand_slug=self.brand_id,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                payload={
+                    "mode": "stream",
+                    "status": status_label,
+                    "latency_ms": int(duration * 1000),
+                    "confidence_score": confidence_score,
+                    "validation_passed": agent_metadata.get("validation_passed"),
+                    "validation_issues": agent_metadata.get("validation_issues", []),
+                    "context_used": len(tool_results),
+                    "citations_count": len(citations),
+                    "grounded": bool(citations or tool_results),
+                    "low_confidence_prevented": (
+                        agent_metadata.get("guardrail_action") == "fallback"
+                        and agent_metadata.get("guardrail_reason") == "low_confidence"
+                    ),
+                    "fallback_stage": agent_metadata.get("fallback_stage"),
+                    "fallback_reason": agent_metadata.get("fallback_reason"),
+                    "guardrail_action": agent_metadata.get("guardrail_action"),
+                    "guardrail_reason": agent_metadata.get("guardrail_reason"),
+                },
+            )
             MESSAGE_COUNT.labels(status=status_label).inc()
             MESSAGE_DURATION.labels(mode="stream", status=status_label).observe(duration)
             logger.info(

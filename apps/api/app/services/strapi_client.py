@@ -167,9 +167,11 @@ class StrapiClient:
                 )
                 resp.raise_for_status()
                 STRAPI_SYNC_COUNT.labels(operation="session", status="success").inc()
+                await self._record_sync_event("session", "success", conversation_id, brand_slug, agent_id)
                 logger.debug("strapi_session_saved", conversation_id=conversation_id, brand_slug=brand_slug, agent_id=agent_id)
         except Exception as e:
             STRAPI_SYNC_COUNT.labels(operation="session", status="error").inc()
+            await self._record_sync_event("session", "error", conversation_id, brand_slug, agent_id, error=str(e))
             logger.warning("strapi_session_save_failed", conversation_id=conversation_id, error=str(e))
 
     async def _save_message(
@@ -200,9 +202,11 @@ class StrapiClient:
                 )
                 resp.raise_for_status()
                 STRAPI_SYNC_COUNT.labels(operation="message", status="success").inc()
+                await self._record_sync_event("message", "success", conversation_id, brand_slug, agent_id)
                 logger.debug("strapi_message_saved", conversation_id=conversation_id, role=role, brand_slug=brand_slug, agent_id=agent_id)
         except Exception as e:
             STRAPI_SYNC_COUNT.labels(operation="message", status="error").inc()
+            await self._record_sync_event("message", "error", conversation_id, brand_slug, agent_id, error=str(e))
             logger.warning("strapi_message_save_failed", conversation_id=conversation_id, role=role, error=str(e))
 
     async def _allow_sync(
@@ -223,6 +227,14 @@ class StrapiClient:
         )
         if not is_allowed:
             STRAPI_SYNC_COUNT.labels(operation=operation, status="rate_limited").inc()
+            await self._record_sync_event(
+                operation,
+                "rate_limited",
+                conversation_id,
+                brand_slug,
+                agent_id,
+                retry_after=info.get("retry_after"),
+            )
             logger.warning(
                 "strapi_sync_rate_limited",
                 operation=operation,
@@ -233,3 +245,26 @@ class StrapiClient:
             )
             return False
         return True
+
+    async def _record_sync_event(
+        self,
+        operation: str,
+        status: str,
+        conversation_id: str,
+        brand_slug: str | None,
+        agent_id: str | None,
+        **extra,
+    ) -> None:
+        from .observability_service import ObservabilityService
+
+        await ObservabilityService().track_event(
+            event_type="strapi_sync",
+            brand_slug=brand_slug,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            payload={
+                "operation": operation,
+                "status": status,
+                **extra,
+            },
+        )

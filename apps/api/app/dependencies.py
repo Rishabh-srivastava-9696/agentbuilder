@@ -8,6 +8,7 @@ from .services.ingestion_service import IngestionService
 from .services.health_service import HealthService
 from .services.knowledge_service import KnowledgeService
 from .services.activity_service import ActivityService
+from .services.observability_service import ObservabilityService
 from .services.runtime_settings_service import RuntimeSettingsService
 from .config import Settings
 
@@ -46,6 +47,11 @@ def get_activity_service() -> ActivityService:
     """Get activity service instance."""
     settings = get_settings()
     return ActivityService(settings)
+
+
+def get_observability_service() -> ObservabilityService:
+    """Get observability service instance."""
+    return ObservabilityService()
 
 
 def get_runtime_settings_service() -> RuntimeSettingsService:

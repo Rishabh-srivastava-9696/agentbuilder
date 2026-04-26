@@ -464,6 +464,75 @@ export const runtimeSettingsApi = {
     apiClient.post<RuntimeSettingsTestResponse>('/api/v1/admin/settings/runtime/test', payload),
 };
 
+export const observabilityApi = {
+  getMetrics: () => apiClient.get<string>('/metrics', { responseType: 'text' }),
+  getSummary: (params?: { brand_slug?: string; agent_id?: string; range_hours?: number }) =>
+    apiClient.get<ObservabilitySummaryResponse>('/api/v1/admin/observability/summary', { params }),
+};
+
+export interface ObservabilityBrand {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface ObservabilityAgent {
+  agent_id: string;
+  agent_name: string;
+  agent_status: string;
+  brand_slug: string;
+  brand_name: string;
+  messages: number;
+  grounded: number;
+  grounded_rate: number;
+  low_confidence_prevented: number;
+  guardrails: number;
+  fallbacks: number;
+  rate_limit_blocks: number;
+  strapi_errors: number;
+  avg_latency_ms: number;
+  avg_confidence: number;
+}
+
+export interface ObservabilitySummaryResponse {
+  filters: {
+    brand_slug?: string | null;
+    agent_id?: string | null;
+    range_hours: number;
+    from: string;
+    to: string;
+  };
+  brands: ObservabilityBrand[];
+  agents: ObservabilityAgent[];
+  totals: {
+    messages: number;
+    grounded: number;
+    grounded_rate: number;
+    low_confidence_prevented: number;
+    guardrails: number;
+    fallbacks: number;
+    rate_limit_blocks: number;
+    strapi_errors: number;
+    avg_latency_ms: number;
+    avg_confidence: number;
+  };
+  sections: {
+    rate_limits: Array<{ policy: string; outcome: string; count: number }>;
+    guardrails: Array<{ action: string; reason: string; count: number }>;
+    fallbacks: Array<{ stage: string; reason: string; count: number }>;
+    strapi_sync: Array<{ operation: string; status: string; count: number }>;
+    latency: Array<{ mode: string; status: string; count: number; average_ms: number }>;
+    hallucination: {
+      responses_checked: number;
+      grounded: number;
+      ungrounded: number;
+      low_confidence_prevented: number;
+      avg_confidence: number;
+      citations: number;
+    };
+  };
+}
+
 // Catalog API
 export const catalogApi = {
   syncShopify: (data: { brand_id: string; store_url: string; access_token?: string }) => 

@@ -18,6 +18,7 @@ from ....connections import connection_manager
 from ....dependencies import get_message_service, get_settings
 from ....security.rate_limiter import check_named_rate_limit
 from ....services.message_service import MessageService
+from ....services.observability_service import ObservabilityService
 from ....websocket_manager import ws_manager
 
 logger = structlog.get_logger()
@@ -60,6 +61,20 @@ async def _enforce_websocket_rate_limit(
         conversation_id=conversation_id,
     )
     if not is_allowed:
+        resolved_brand_slug = brand_slug or await _get_agent_brand_slug(agent_id)
+        await ObservabilityService().track_event(
+            event_type="rate_limit",
+            brand_slug=resolved_brand_slug,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            payload={
+                "policy": info.get("policy") or policy,
+                "outcome": "blocked",
+                "endpoint": endpoint,
+                "retry_after": info.get("retry_after"),
+                "channel": "websocket",
+            },
+        )
         await _safe_send_text(websocket, json.dumps({
             "type": "rate_limit",
             "content": "Rate limit exceeded. Please wait before sending another message.",
@@ -82,6 +97,19 @@ async def _enforce_message_rate_limit(request: MessageRequest, policy: str, endp
         endpoint=endpoint,
     )
     if not is_allowed:
+        await ObservabilityService().track_event(
+            event_type="rate_limit",
+            brand_slug=brand_slug,
+            agent_id=request.agent_id,
+            conversation_id=request.conversation_id,
+            payload={
+                "policy": info.get("policy") or policy,
+                "outcome": "blocked",
+                "endpoint": endpoint,
+                "retry_after": info.get("retry_after"),
+                "channel": "http",
+            },
+        )
         raise HTTPException(
             status_code=429,
             detail="Rate limit exceeded",

@@ -5,6 +5,7 @@ import {
   BuildingOfficeIcon,
   CpuChipIcon,
   Cog6ToothIcon,
+  ChartBarSquareIcon,
 } from '@heroicons/react/24/outline';
 import { useAuth } from '../auth/AuthProvider';
 
@@ -16,6 +17,7 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: HomeIcon },
   { name: 'Brands', href: '/brands', icon: BuildingOfficeIcon },
   { name: 'Agents', href: '/agents', icon: CpuChipIcon },
+  { name: 'Observability', href: '/observability', icon: ChartBarSquareIcon },
   { name: 'Settings', href: '/settings', icon: Cog6ToothIcon },
 ];
 
