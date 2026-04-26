@@ -14,6 +14,8 @@ interface MessageBubbleProps {
   assistantMsgColor?: string;
   onFeedback?: (id: string, feedback: 'up' | 'down' | null) => void;
   onRegenerate?: (id: string) => void;
+  showSources?: boolean;
+  showProductCards?: boolean;
 }
 
 interface Product {
@@ -110,6 +112,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   assistantMsgColor = '#111827',
   onFeedback,
   onRegenerate,
+  showSources = false,
+  showProductCards = true,
 }) => {
   const isUser = message.role === 'user';
   const [extractedProducts, setExtractedProducts] = useState<Product[]>([]);
@@ -117,22 +121,28 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   
   // Parse product info tags and fetch product details
   useEffect(() => {
-    if (!isUser && message.content) {
-      const { productSkus } = parseProductInfo(message.content);
-      
-      if (productSkus.length > 0) {
-        // Get agent ID from URL or localStorage
-        const urlParams = new URLSearchParams(window.location.search);
-        const agentId = urlParams.get('agent_id') || localStorage.getItem('agent_widget_agent_id') || '';
-        
-        fetchProductDetails(productSkus, agentId)
-          .then(products => {
-            console.log('[MessageBubble] Fetched products:', products);
-            setExtractedProducts(products);
-          });
-      }
+    if (isUser || !showProductCards || !message.content) {
+      setExtractedProducts([]);
+      return;
     }
-  }, [message.content, isUser]);
+
+    const { productSkus } = parseProductInfo(message.content);
+
+    if (productSkus.length === 0) {
+      setExtractedProducts([]);
+      return;
+    }
+
+    // Get agent ID from URL or localStorage
+    const urlParams = new URLSearchParams(window.location.search);
+    const agentId = urlParams.get('agent_id') || localStorage.getItem('agent_widget_agent_id') || '';
+
+    fetchProductDetails(productSkus, agentId)
+      .then(products => {
+        console.log('[MessageBubble] Fetched products:', products);
+        setExtractedProducts(products);
+      });
+  }, [message.content, isUser, showProductCards]);
   
   // Render markdown content with product tags removed
   const renderedContent = useMemo(() => {
@@ -208,7 +218,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         )}
         
         {/* Phase 5: Product Cards - from metadata OR extracted from <product_info> tags */}
-        {!isUser && allProducts.length > 0 && (
+        {!isUser && showProductCards && allProducts.length > 0 && (
           <div className="product-cards-container">
             <div className="cards-label">
               {allProducts.length === 1 ? 'Product:' : 'Products:'}
@@ -235,7 +245,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           </div>
         )}
         
-        {message.citations && message.citations.length > 0 && (
+        {showSources && message.citations && message.citations.length > 0 && (
           <div className="citations">
             <div className="citations-label">Sources</div>
             <div className="citations-grid">

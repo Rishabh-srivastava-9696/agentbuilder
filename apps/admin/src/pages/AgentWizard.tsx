@@ -106,6 +106,8 @@ interface AgentData {
   conversation_memory: boolean;
   typing_indicators: boolean;
   response_streaming: boolean;
+  show_sources: boolean;
+  show_product_cards: boolean;
   rate_limiting: boolean;
   content_filtering: boolean;
   session_timeout: number;
@@ -193,6 +195,8 @@ const initialData: AgentData = {
   conversation_memory: true,
   typing_indicators: true,
   response_streaming: true,
+  show_sources: false,
+  show_product_cards: true,
   rate_limiting: true,
   content_filtering: true,
   session_timeout: 30,
@@ -414,6 +418,8 @@ export default function AgentWizard() {
         conversation_memory: features.conversation_memory ?? true,
         typing_indicators: features.typing_indicators ?? true,
         response_streaming: features.response_streaming ?? true,
+        show_sources: features.show_sources ?? false,
+        show_product_cards: features.show_product_cards ?? true,
         allowed_file_types: features.file_upload?.allowed_types || [],
         max_file_size: features.file_upload?.max_size_mb ?? 10,
 
@@ -595,6 +601,8 @@ export default function AgentWizard() {
             human_takeover: agentData.human_takeover,
             typing_indicators: agentData.typing_indicators,
             response_streaming: agentData.response_streaming,
+            show_sources: agentData.show_sources,
+            show_product_cards: agentData.show_product_cards,
           },
           security: {
             rate_limiting: agentData.rate_limiting,

@@ -17,6 +17,8 @@ interface ChatWindowProps {
   onToggleExpand?: () => void;
   onRegenerate?: (id: string) => void;
   onFeedback?: (id: string, feedback: 'up' | 'down' | null) => void;
+  showSources?: boolean;
+  showProductCards?: boolean;
 }
 
 // ── Icon components ────────────────────────────────────────────
@@ -133,6 +135,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onToggleExpand,
   onRegenerate,
   onFeedback,
+  showSources = false,
+  showProductCards = true,
 }) => {
   const { brandTheme } = useWidgetStore();
   const [inputValue, setInputValue] = React.useState('');
@@ -350,6 +354,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   assistantMsgColor={tk?.assistantMsgColor ?? '#fff'}
                   onRegenerate={onRegenerate}
                   onFeedback={onFeedback}
+                  showSources={showSources}
+                  showProductCards={showProductCards}
                 />
               );
             })}

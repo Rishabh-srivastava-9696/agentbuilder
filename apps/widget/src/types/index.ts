@@ -56,6 +56,8 @@ export interface WidgetConfig {
   userId: string;
   agentId?: string;
   enableHumanTakeover?: boolean;
+  showSources?: boolean;
+  showProductCards?: boolean;
   position?: 'bottom-right' | 'bottom-left' | 'sidebar';
   pageContext?: {
     extractContent?: boolean;

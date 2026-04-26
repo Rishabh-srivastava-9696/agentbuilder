@@ -74,6 +74,10 @@ export default function StepReview({
           typing_indicators: data.typing_indicators,
           response_streaming: data.response_streaming,
           human_takeover: data.human_takeover
+        },
+        widget_display: {
+          show_sources: data.show_sources,
+          show_product_cards: data.show_product_cards
         }
       },
       "SOUL.md": {
@@ -356,6 +360,8 @@ export default function StepReview({
               <p><strong>Rate Limiting:</strong> {data.rate_limiting ? 'Enabled' : 'Disabled'}</p>
               <p><strong>Content Filter:</strong> {data.content_filtering ? 'Enabled' : 'Disabled'}</p>
               <p><strong>Session Timeout:</strong> {data.session_timeout}min</p>
+              <p><strong>Sources:</strong> {data.show_sources ? 'Shown' : 'Hidden'}</p>
+              <p><strong>Product Cards:</strong> {data.show_product_cards ? 'Shown' : 'Hidden'}</p>
             </div>
           </div>
         </div>

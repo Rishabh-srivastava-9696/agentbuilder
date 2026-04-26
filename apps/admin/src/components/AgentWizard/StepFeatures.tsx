@@ -8,6 +8,8 @@ interface StepFeaturesProps {
     conversation_memory: boolean;
     typing_indicators: boolean;
     response_streaming: boolean;
+    show_sources: boolean;
+    show_product_cards: boolean;
     rate_limiting: boolean;
     content_filtering: boolean;
     session_timeout: number;
@@ -137,6 +139,47 @@ export default function StepFeatures({ data, onChange }: StepFeaturesProps) {
               type="checkbox"
               checked={data.typing_indicators}
               onChange={(e) => onChange('typing_indicators', e.target.checked)}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-sm font-medium text-gray-900 mb-3">Widget Display</h4>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+            <div>
+              <label htmlFor="show_sources" className="text-sm font-medium text-gray-900">
+                Show Sources
+              </label>
+              <p className="text-xs text-gray-500">
+                Show source citations below assistant answers in the widget.
+              </p>
+            </div>
+            <input
+              id="show_sources"
+              type="checkbox"
+              checked={data.show_sources}
+              onChange={(e) => onChange('show_sources', e.target.checked)}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+            />
+          </div>
+
+          <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+            <div>
+              <label htmlFor="show_product_cards" className="text-sm font-medium text-gray-900">
+                Show Product Cards
+              </label>
+              <p className="text-xs text-gray-500">
+                Show structured product cards when the agent returns matching products.
+              </p>
+            </div>
+            <input
+              id="show_product_cards"
+              type="checkbox"
+              checked={data.show_product_cards}
+              onChange={(e) => onChange('show_product_cards', e.target.checked)}
               className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
             />
           </div>

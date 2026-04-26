@@ -100,6 +100,8 @@ function App({ config }: AppProps) {
   const [agentId, setAgentId] = React.useState<string | null>(null);
   const [useWebSocket, setUseWebSocket] = React.useState(true);
   const [humanTakeoverEnabled, setHumanTakeoverEnabled] = React.useState(false);
+  const [showSources, setShowSources] = React.useState(config?.showSources ?? false);
+  const [showProductCards, setShowProductCards] = React.useState(config?.showProductCards ?? true);
   // Holds the pending conversation lifecycle event type until agentId is ready.
   const [convStartEvent, setConvStartEvent] = React.useState<'conversation_started' | 'conversation_resumed' | null>(null);
 
@@ -131,10 +133,15 @@ function App({ config }: AppProps) {
         const agent = await agentRes.json();
         const brandId: string | undefined = agent.brand_id;
         // Read WebSocket setting from agent config (default true if not set)
-        const wsEnabled = agent.configuration?.features?.websockets !== false;
-        const takeoverEnabled = config?.enableHumanTakeover ?? agent.configuration?.features?.human_takeover === true;
+        const features = agent.configuration?.features || {};
+        const wsEnabled = features.websockets !== false;
+        const takeoverEnabled = config?.enableHumanTakeover ?? features.human_takeover === true;
+        const shouldShowSources = config?.showSources ?? features.show_sources === true;
+        const shouldShowProductCards = config?.showProductCards ?? features.show_product_cards !== false;
         setUseWebSocket(wsEnabled);
         setHumanTakeoverEnabled(takeoverEnabled);
+        setShowSources(shouldShowSources);
+        setShowProductCards(shouldShowProductCards);
         if (!brandId) return;
 
         // 2. Get brand → extract colors / identity
@@ -153,7 +160,7 @@ function App({ config }: AppProps) {
     };
 
     fetchBrandTheme();
-  }, [agentId, config?.enableHumanTakeover, setBrandTheme]);
+  }, [agentId, config?.enableHumanTakeover, config?.showProductCards, config?.showSources, setBrandTheme]);
 
   React.useEffect(() => {
     if (config) setConfig(config);
@@ -414,6 +421,8 @@ function App({ config }: AppProps) {
             onToggleExpand={toggleExpanded}
             onRegenerate={handleRegenerate}
             onFeedback={setMessageFeedback}
+            showSources={showSources}
+            showProductCards={showProductCards}
           />
         </div>
       )}
