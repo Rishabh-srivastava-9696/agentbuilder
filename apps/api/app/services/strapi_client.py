@@ -15,6 +15,9 @@ except ImportError:
 
 logger = structlog.get_logger(__name__)
 
+MAX_SYNC_ATTEMPTS = 3
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
 
 class StrapiClient:
     """Async client for pushing conversation data to the Strapi dashboard."""
@@ -137,10 +140,19 @@ class StrapiClient:
         agent_id: str | None = None,
     ) -> None:
         await self._ensure_session(conversation_id, brand_slug=brand_slug, agent_id=agent_id)
-        await asyncio.gather(
-            self._save_message(conversation_id, user_message, "user", brand_slug=brand_slug, agent_id=agent_id),
-            self._save_message(conversation_id, assistant_message, "agent", brand_slug=brand_slug, agent_id=agent_id),
-            return_exceptions=True,
+        await self._save_message(
+            conversation_id,
+            user_message,
+            "user",
+            brand_slug=brand_slug,
+            agent_id=agent_id,
+        )
+        await self._save_message(
+            conversation_id,
+            assistant_message,
+            "agent",
+            brand_slug=brand_slug,
+            agent_id=agent_id,
         )
 
     async def _ensure_session(
@@ -154,21 +166,22 @@ class StrapiClient:
         try:
             if not await self._allow_sync("session", conversation_id, brand_slug, agent_id):
                 return
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/session-save",
-                    json={
-                        "conversation_id": conversation_id,
-                        "brand_slug": brand_slug,
-                        "agent_id": agent_id,
-                        "last_message_at": last_message_at,
-                    },
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                STRAPI_SYNC_COUNT.labels(operation="session", status="success").inc()
-                await self._record_sync_event("session", "success", conversation_id, brand_slug, agent_id)
-                logger.debug("strapi_session_saved", conversation_id=conversation_id, brand_slug=brand_slug, agent_id=agent_id)
+            await self._post_with_retry(
+                "/api/session-save",
+                {
+                    "conversation_id": conversation_id,
+                    "brand_slug": brand_slug,
+                    "agent_id": agent_id,
+                    "last_message_at": last_message_at,
+                },
+                operation="session",
+                conversation_id=conversation_id,
+                brand_slug=brand_slug,
+                agent_id=agent_id,
+            )
+            STRAPI_SYNC_COUNT.labels(operation="session", status="success").inc()
+            await self._record_sync_event("session", "success", conversation_id, brand_slug, agent_id)
+            logger.debug("strapi_session_saved", conversation_id=conversation_id, brand_slug=brand_slug, agent_id=agent_id)
         except Exception as e:
             STRAPI_SYNC_COUNT.labels(operation="session", status="error").inc()
             await self._record_sync_event("session", "error", conversation_id, brand_slug, agent_id, error=str(e))
@@ -187,27 +200,73 @@ class StrapiClient:
         try:
             if not await self._allow_sync("message", conversation_id, brand_slug, agent_id):
                 return
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/chat-save",
-                    json={
-                        "conversation_id": conversation_id,
-                        "message_content": content,
-                        "role": role,
-                        "brand_slug": brand_slug,
-                        "agent_id": agent_id,
-                        "timestamp": timestamp,
-                    },
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                STRAPI_SYNC_COUNT.labels(operation="message", status="success").inc()
-                await self._record_sync_event("message", "success", conversation_id, brand_slug, agent_id)
-                logger.debug("strapi_message_saved", conversation_id=conversation_id, role=role, brand_slug=brand_slug, agent_id=agent_id)
+            await self._post_with_retry(
+                "/api/chat-save",
+                {
+                    "conversation_id": conversation_id,
+                    "message_content": content,
+                    "role": role,
+                    "brand_slug": brand_slug,
+                    "agent_id": agent_id,
+                    "timestamp": timestamp,
+                },
+                operation="message",
+                conversation_id=conversation_id,
+                brand_slug=brand_slug,
+                agent_id=agent_id,
+                role=role,
+            )
+            STRAPI_SYNC_COUNT.labels(operation="message", status="success").inc()
+            await self._record_sync_event("message", "success", conversation_id, brand_slug, agent_id, role=role)
+            logger.debug("strapi_message_saved", conversation_id=conversation_id, role=role, brand_slug=brand_slug, agent_id=agent_id)
         except Exception as e:
             STRAPI_SYNC_COUNT.labels(operation="message", status="error").inc()
-            await self._record_sync_event("message", "error", conversation_id, brand_slug, agent_id, error=str(e))
+            await self._record_sync_event("message", "error", conversation_id, brand_slug, agent_id, role=role, error=str(e))
             logger.warning("strapi_message_save_failed", conversation_id=conversation_id, role=role, error=str(e))
+
+    async def _post_with_retry(
+        self,
+        path: str,
+        payload: dict,
+        *,
+        operation: str,
+        conversation_id: str,
+        brand_slug: str | None,
+        agent_id: str | None,
+        role: str | None = None,
+    ) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_SYNC_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(
+                        f"{self.base_url}{path}",
+                        json=payload,
+                        headers=self._headers,
+                    )
+                    resp.raise_for_status()
+                    return
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status_code = exc.response.status_code
+                if status_code not in RETRYABLE_STATUS_CODES or attempt >= MAX_SYNC_ATTEMPTS:
+                    raise
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+                last_error = exc
+                if attempt >= MAX_SYNC_ATTEMPTS:
+                    raise
+
+            logger.warning(
+                "strapi_sync_retrying",
+                operation=operation,
+                conversation_id=conversation_id,
+                brand_slug=brand_slug,
+                agent_id=agent_id,
+                role=role,
+                attempt=attempt,
+                error=str(last_error),
+            )
+            await asyncio.sleep(0.25 * attempt)
 
     async def _allow_sync(
         self,
