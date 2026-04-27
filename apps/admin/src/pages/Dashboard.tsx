@@ -52,7 +52,7 @@ export default function Dashboard() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="mt-2 text-sm text-gray-600">
-          Welcome to the Agent Builder admin dashboard. Manage your brands and AI agents from here.
+          Welcome to NOVA Admin. Manage your brands and context-aware AI agents from here.
         </p>
       </div>
 

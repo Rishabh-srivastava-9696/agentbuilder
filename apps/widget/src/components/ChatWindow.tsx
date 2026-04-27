@@ -19,6 +19,7 @@ interface ChatWindowProps {
   onFeedback?: (id: string, feedback: 'up' | 'down' | null) => void;
   showSources?: boolean;
   showProductCards?: boolean;
+  isAgentConfigured?: boolean;
 }
 
 // ── Icon components ────────────────────────────────────────────
@@ -137,6 +138,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onFeedback,
   showSources = false,
   showProductCards = true,
+  isAgentConfigured = true,
 }) => {
   const { brandTheme } = useWidgetStore();
   const [inputValue, setInputValue] = React.useState('');
@@ -182,6 +184,36 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const titleColor = tk?.titleColor ?? (mode === 'dark' ? '#fff' : '#1a1208');
   const subtitleColor = tk?.subtitleColor ?? (mode === 'dark' ? 'rgba(255,255,255,0.45)' : 'rgba(60,40,20,0.5)');
   const accentColor = tk?.accentColor ?? '#6366f1';
+  const neutralInputTokens: BrandThemeTokens = {
+    mode,
+    panelBg,
+    sceneBorder: '#1f2937',
+    sceneShad: '0 20px 60px rgba(0,0,0,0.35)',
+    bubbleBg: '#111827',
+    bubbleBorder: 'rgba(16,185,129,0.28)',
+    bubbleShad: '0 6px 24px rgba(16,185,129,0.18)',
+    bubbleRing: 'rgba(16,185,129,0.24)',
+    orbBg,
+    titleColor,
+    subtitleColor,
+    accentColor: '#10b981',
+    chipBg: 'rgba(16,185,129,0.1)',
+    chipBorder: 'rgba(16,185,129,0.2)',
+    chipColor: mode === 'dark' ? 'rgba(255,255,255,0.72)' : '#065f46',
+    inputBg: mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.88)',
+    inputBorder: 'rgba(16,185,129,0.22)',
+    inputColor: mode === 'dark' ? 'rgba(255,255,255,0.45)' : 'rgba(31,41,55,0.65)',
+    dividerColor: mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+    voiceBg: 'rgba(16,185,129,0.08)',
+    voiceBorder: 'rgba(16,185,129,0.18)',
+    voiceIconColor: mode === 'dark' ? 'rgba(255,255,255,0.65)' : '#047857',
+    sendBg: 'linear-gradient(135deg,#10b981,#059669)',
+    sendShad: '0 4px 14px rgba(16,185,129,0.32)',
+    userMsgBg: '#10b981',
+    userMsgColor: '#ffffff',
+    assistantMsgBg: mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    assistantMsgColor: mode === 'dark' ? 'rgba(255,255,255,0.88)' : '#1f2937',
+  };
 
   return (
     <div
@@ -247,7 +279,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               )}
             </div>
             <div className="chat-hero-title" style={{ color: titleColor }}>
-              {brandTheme?.heroTitle ?? 'How can I help?'}
+              {brandTheme?.heroTitle ?? 'NOVA Preview'}
             </div>
             {hasCycling ? (
               <>
@@ -270,7 +302,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               </>
             ) : (
               <div className="chat-hero-subtitle" style={{ color: subtitleColor }}>
-                {brandTheme?.heroSubtitle ?? 'Ask me anything'}
+                {isAgentConfigured
+                  ? (brandTheme?.heroSubtitle ?? 'Ask me anything')
+                  : 'Add ?agent_id=your-agent-id&open=1 to activate a specific agent.'}
               </div>
             )}
           </div>
@@ -294,13 +328,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 ))}
               </div>
             )}
-            {tk && (
+            {isAgentConfigured && (
               <InputRow
                 value={inputValue}
                 onChange={setInputValue}
                 onSubmit={handleSubmit}
                 placeholder="Ask something..."
-                tk={tk}
+                tk={tk ?? neutralInputTokens}
               />
             )}
           </div>

@@ -29,8 +29,10 @@ export default function Layout({ children }: LayoutProps) {
     <div className="min-h-screen bg-gray-50">
       {/* Sidebar */}
       <div className="fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg">
-        <div className="flex h-16 items-center justify-center border-b border-gray-200">
-          <h1 className="text-xl font-bold text-gray-900">Agent Builder</h1>
+        <div className="flex h-16 items-center justify-center border-b border-gray-200 px-6">
+          <Link to="/dashboard" className="flex items-center justify-center" aria-label="NOVA dashboard">
+            <img src="/brand/nova-logo.svg" alt="NOVA" className="h-9 w-auto" />
+          </Link>
         </div>
         
         <nav className="mt-8 px-3">
@@ -85,9 +87,27 @@ export default function Layout({ children }: LayoutProps) {
             </div>
           </div>
         </div>
-        <main className="py-8">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            {children}
+        <main className="min-h-[calc(100vh-73px)] py-8">
+          <div className="mx-auto flex min-h-[calc(100vh-137px)] max-w-7xl flex-col px-4 sm:px-6 lg:px-8">
+            <div className="flex-1">
+              {children}
+            </div>
+            <footer className="mt-10 border-t border-gray-200 py-6 text-xs text-gray-500">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <span className="font-semibold text-gray-700">NOVA</span> is built by Fractics.
+                  {' '}© {new Date().getFullYear()} Fractics. All rights reserved.
+                </div>
+                <a
+                  className="font-medium text-gray-600 hover:text-primary-600"
+                  href="https://fractics.com"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  fractics.com
+                </a>
+              </div>
+            </footer>
           </div>
         </main>
       </div>

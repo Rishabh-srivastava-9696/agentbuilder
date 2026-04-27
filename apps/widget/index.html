@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/brand/nova-logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="/runtime-config.js"></script>
     <script>
@@ -10,13 +10,13 @@
         document.documentElement.dataset.embedded = 'true';
       }
     </script>
-    <title>Agent Builder Platform - Chat Widget</title>
+    <title>NOVA - Chat Widget</title>
     <style>
       body {
         margin: 0;
         padding: 20px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #07120f 0%, #103c32 100%);
         min-height: 100vh;
         display: flex;
         align-items: center;
@@ -34,13 +34,52 @@
       
       .demo-container h1 {
         color: #111827;
-        margin-bottom: 1rem;
+        margin: 1rem 0;
+      }
+
+      .nova-logo {
+        width: 180px;
+        max-width: 80%;
+        height: auto;
       }
       
       .demo-container p {
         color: #6b7280;
         margin-bottom: 1.5rem;
         line-height: 1.6;
+      }
+
+      .preview-form {
+        display: flex;
+        gap: 0.5rem;
+        margin: 1.25rem auto 0;
+        max-width: 520px;
+      }
+
+      .preview-input {
+        flex: 1;
+        min-width: 0;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 0.75rem 0.875rem;
+        font-size: 0.95rem;
+        color: #111827;
+      }
+
+      .preview-button {
+        border: 0;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        background: #10b981;
+        color: white;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .preview-help {
+        margin-top: 0.75rem;
+        font-size: 0.85rem;
+        color: #6b7280;
       }
       
       .status {
@@ -72,7 +111,7 @@
         display: inline-block;
         margin-top: 1rem;
         padding: 0.75rem 1.5rem;
-        background: #2563eb;
+        background: #10b981;
         color: white;
         text-decoration: none;
         border-radius: 6px;
@@ -81,7 +120,7 @@
       }
       
       .demo-link:hover {
-        background: #1d4ed8;
+        background: #059669;
       }
 
       html[data-embedded="true"],
@@ -105,28 +144,39 @@
   </head>
   <body>
     <div class="demo-container">
-      <h1>🤖 Agent Builder Platform</h1>
+      <img class="nova-logo" src="/brand/nova-logo.svg" alt="NOVA" />
+      <h1>NOVA Chat Widget</h1>
       <p>
-        Welcome to the Agent Builder Platform chat widget demo! 
-        This embeddable widget provides AI-powered conversations with 
-        real-time document retrieval and intelligent responses.
+        Welcome to the NOVA chat widget demo.
+        This embeddable assistant provides grounded AI conversations with
+        real-time retrieval, product context, and responsible handoff controls.
       </p>
       
       <div class="status">
         <span class="status-dot"></span>
-        Widget Active - Look for the chat button!
+        NOVA widget active - look for the chat button.
       </div>
       
       <p style="margin-top: 1.5rem;">
-        The chat widget is now running on this page. Look for the blue chat button 
+        The NOVA widget is now running on this page. Look for the chat button
         in the bottom-right corner to start a conversation.
       </p>
 
-      <p style="font-size: 0.875rem; color: #9ca3af;">
-        <strong>Agent Detection:</strong> The widget automatically fetches the first available agent from the API.
-        <br/>
-        To specify a custom agent, add <code>data-agent-id="your-agent-id"</code> to the script tag.
-      </p>
+      <form class="preview-form" id="agent-preview-form">
+        <input
+          class="preview-input"
+          id="agent-preview-input"
+          name="agent_id"
+          type="text"
+          placeholder="Paste agent_id to preview"
+          autocomplete="off"
+        />
+        <button class="preview-button" type="submit">Preview</button>
+      </form>
+
+      <div class="preview-help">
+        Or open <code>/?agent_id=your-agent-id&open=1</code>. Without an agent_id, this page stays in neutral NOVA preview mode.
+      </div>
       
       <a href="/demo.html" class="demo-link">View Full Demo Page</a>
     </div>
@@ -134,6 +184,21 @@
     <div id="root"></div>
     <!-- You can specify agent ID via data attribute: -->
     <!-- <script type="module" src="/src/main.tsx" data-agent-id="your-agent-id-here"></script> -->
+    <script>
+      const previewForm = document.getElementById('agent-preview-form');
+      const previewInput = document.getElementById('agent-preview-input');
+      const currentAgentId = new URLSearchParams(window.location.search).get('agent_id');
+      if (currentAgentId && previewInput) previewInput.value = currentAgentId;
+      previewForm?.addEventListener('submit', function (event) {
+        event.preventDefault();
+        const agentId = previewInput?.value?.trim();
+        if (!agentId) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set('agent_id', agentId);
+        url.searchParams.set('open', '1');
+        window.location.href = url.toString();
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

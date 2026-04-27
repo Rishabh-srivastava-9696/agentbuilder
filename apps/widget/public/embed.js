@@ -4,7 +4,7 @@
 
   var agentId = script.getAttribute('data-agent-id');
   if (!agentId) {
-    console.error('[AgentBuilder] Missing data-agent-id on embed script.');
+    console.error('[NOVA] Missing data-agent-id on embed script.');
     return;
   }
 
@@ -30,7 +30,7 @@
 
   var frame = document.createElement('iframe');
   frame.id = 'agentbuilder-widget-frame';
-  frame.title = script.getAttribute('data-title') || 'AI chat assistant';
+  frame.title = script.getAttribute('data-title') || 'NOVA AI chat assistant';
   frame.src = widgetUrl.href;
   frame.allow = 'clipboard-write';
   frame.setAttribute('aria-live', 'polite');

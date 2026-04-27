@@ -113,12 +113,7 @@ function App({ config }: AppProps) {
     if (config?.agentId) { setAgentId(config.agentId); return; }
     const scriptTag = document.querySelector('script[data-agent-id]') as HTMLScriptElement;
     if (scriptTag?.dataset.agentId) { setAgentId(scriptTag.dataset.agentId); return; }
-
-    // Fallback: first available agent
-    fetch(`${API_BASE}/api/v1/public/agents`)
-      .then(r => r.ok ? r.json() : [])
-      .then(agents => { if (agents.length > 0) setAgentId(agents[0].id); })
-      .catch(() => {});
+    setAgentId(null);
   }, [config?.agentId]);
 
   // ── Fetch brand theme once agent ID is known ──────────────────
@@ -304,7 +299,7 @@ function App({ config }: AppProps) {
     if (!agentId) {
       addMessage({
         id: Date.now().toString(),
-        content: 'Agent is still loading, please wait...',
+        content: 'Add an agent_id in the URL to preview a NOVA agent, for example: ?agent_id=your-agent-id&open=1',
         role: 'assistant',
         timestamp: new Date(),
       });
@@ -423,6 +418,7 @@ function App({ config }: AppProps) {
             onFeedback={setMessageFeedback}
             showSources={showSources}
             showProductCards={showProductCards}
+            isAgentConfigured={Boolean(agentId)}
           />
         </div>
       )}

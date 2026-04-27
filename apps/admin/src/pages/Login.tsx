@@ -10,7 +10,7 @@ function AuthShell({ title, subtitle, children }: { title: string; subtitle: str
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#1e293b,_#020617_60%)] px-6 py-10 text-slate-900">
       <div className="mx-auto grid max-w-6xl gap-10 lg:grid-cols-[1.1fr_0.9fr]">
         <section className="hidden rounded-[2rem] border border-white/10 bg-white/5 p-10 text-white shadow-2xl lg:block">
-          <p className="text-sm uppercase tracking-[0.35em] text-sky-200">Agent Builder</p>
+          <img src="/brand/nova-logo-dark.svg" alt="NOVA" className="h-12 w-auto" />
           <h1 className="mt-6 max-w-xl text-5xl font-semibold leading-tight">
             Secure admin access for brands, agents, knowledge, and runtime settings.
           </h1>
@@ -84,7 +84,7 @@ export default function Login() {
   }, [loginWithGoogle, navigate, redirectTo]);
 
   return (
-    <AuthShell title="Welcome back" subtitle="Sign in to continue to the Agent Builder dashboard.">
+    <AuthShell title="Welcome back" subtitle="Sign in to continue to the NOVA dashboard.">
       <form className="space-y-5" onSubmit={handleSubmit}>
         <label className="block">
           <span className="mb-2 block text-sm font-medium text-slate-700">Email</span>
@@ -147,4 +147,3 @@ export default function Login() {
     </AuthShell>
   );
 }
-
