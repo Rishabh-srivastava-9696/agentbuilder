@@ -1,4 +1,18 @@
-# NOVA - Agent Builder Platform
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/nova-logo-for-dark-mode.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/nova-logo-for-light-mode.svg">
+    <img alt="NOVA" src="docs/assets/nova-logo-for-light-mode.svg" width="260">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://fractics.com">
+    <img alt="Built by Fractics" src="docs/assets/fractics-logo-black.png" width="180">
+  </a>
+</p>
+
+<h1 align="center">NOVA - Agent Builder Platform</h1>
 
 NOVA is Fractics' context-aware conversational agent platform for building, deploying, and operating grounded AI agents across web, commerce, and support workflows.
 
