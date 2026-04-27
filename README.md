@@ -12,6 +12,12 @@ The repository name remains `agentbuilder` for engineering purposes, but the pro
 
 ---
 
+## About
+
+NOVA is a context-aware conversational agent platform by Fractics. It helps teams build grounded AI assistants with hybrid search, structured knowledge bases, memory, product catalogs, embeddable web chat, human takeover, and responsible AI observability.
+
+---
+
 ## Overview
 
 NOVA helps teams create reliable AI agents with:
@@ -296,6 +302,14 @@ The code is released under the [GNU Affero General Public License v3.0 or later]
 The NOVA and Fractics names, logos, product identity, and brand assets remain owned by Fractics. The AGPL covers the code; it does not grant trademark rights or permission to present a hosted, managed, white-label, or commercial resale offering as the official NOVA product.
 
 For commercial hosting, managed services, white-label use, resale, or brand permissions, contact Fractics. See [TRADEMARKS.md](./TRADEMARKS.md).
+
+---
+
+## Contributors
+
+- Anant Mendiratta
+- Claude Code
+- Codex
 
 ---
 
