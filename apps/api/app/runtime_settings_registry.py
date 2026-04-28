@@ -155,6 +155,13 @@ SETTINGS_REGISTRY: tuple[RuntimeSettingDefinition, ...] = (
         env_var="VOYAGE_MODEL",
     ),
     RuntimeSettingDefinition(
+        key="voyage.base_url",
+        section="voyage",
+        label="Voyage base URL",
+        description="Embeddings/rerank API base URL. Use https://ai.mongodb.com/v1 for Atlas Model API keys.",
+        env_var="VOYAGE_BASE_URL",
+    ),
+    RuntimeSettingDefinition(
         key="voyage.rerank_model",
         section="voyage",
         label="Voyage rerank model",

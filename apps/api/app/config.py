@@ -155,6 +155,7 @@ class Settings(BaseSettings):
     
     # Voyage AI Configuration
     VOYAGE_API_KEY: str = ""
+    VOYAGE_BASE_URL: str = "https://api.voyageai.com/v1"
     VOYAGE_MODEL: str = "voyage-3-large"
     VOYAGE_RERANK_MODEL: str = "rerank-2.5"
     

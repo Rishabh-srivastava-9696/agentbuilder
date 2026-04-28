@@ -24,7 +24,7 @@ class VoyageClient:
             raise ValueError("Voyage API key not found. Set VOYAGE_API_KEY environment variable.")
         
         self.model = model
-        self.base_url = base_url
+        self.base_url = (base_url or "https://api.voyageai.com/v1").rstrip("/")
         self.auth_failed = False
         self.client = httpx.AsyncClient(
             headers={
@@ -33,7 +33,7 @@ class VoyageClient:
             },
             timeout=30.0
         )
-        logger.info("Voyage client initialized", model=model)
+        logger.info("Voyage client initialized", base_url=self.base_url, model=model)
     
     async def embed_query(self, query: str) -> List[float]:
         """Generate embedding for a search query."""
@@ -62,13 +62,16 @@ class VoyageClient:
             input_type: 'query' or 'document' for optimized embeddings
         """
         try:
+            payload = {
+                "input": texts,
+                "model": self.model,
+            }
+            if "ai.mongodb.com" not in self.base_url:
+                payload["input_type"] = input_type
+
             response = await self.client.post(
                 f"{self.base_url}/embeddings",
-                json={
-                    "input": texts,
-                    "model": self.model,
-                    "input_type": input_type
-                }
+                json=payload
             )
             response.raise_for_status()
             

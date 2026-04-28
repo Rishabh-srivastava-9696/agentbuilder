@@ -35,8 +35,10 @@ class RetrievalPipeline:
         brand_id: Optional[str] = None,
         voyage_api_key: Optional[str] = None,
         voyage_model: str = "voyage-3-large",
+        voyage_base_url: str = "https://api.voyageai.com/v1",
         rerank_api_key: Optional[str] = None,
         rerank_model: str = "rerank-2.5",
+        rerank_base_url: str = "https://api.voyageai.com/v1",
     ):
         self.config = config or RetrievalConfig()
         self.brand_id = brand_id
@@ -47,7 +49,7 @@ class RetrievalPipeline:
                 AtlasVectorSearch(
                     brand_id=brand_id,
                     voyage_client=(
-                        VoyageClient(api_key=voyage_api_key, model=voyage_model)
+                        VoyageClient(api_key=voyage_api_key, model=voyage_model, base_url=voyage_base_url)
                         if voyage_api_key
                         else None
                     ),
@@ -68,7 +70,11 @@ class RetrievalPipeline:
         # Initialize fusion and reranking
         self.rrf = RRFFusion(k=self.config.rrf_k)
         self.reranker = (
-            CrossEncoderReranker(api_key=rerank_api_key or voyage_api_key, model=rerank_model)
+            CrossEncoderReranker(
+                api_key=rerank_api_key or voyage_api_key,
+                model=rerank_model,
+                base_url=rerank_base_url,
+            )
             if self.config.rerank_enabled
             else None
         )

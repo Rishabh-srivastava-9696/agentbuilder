@@ -30,6 +30,7 @@ def build_settings(**overrides):
         "AZURE_SUBSCRIPTION_ID": "sub-123",
         "AZURE_RESOURCE_GROUP": "rg-main",
         "VOYAGE_API_KEY": "",
+        "VOYAGE_BASE_URL": "https://api.voyageai.com/v1",
         "VOYAGE_MODEL": "voyage-3-large",
         "VOYAGE_RERANK_MODEL": "rerank-2.5",
         "OPENAI_API_KEY": "",

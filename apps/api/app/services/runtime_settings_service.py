@@ -380,6 +380,7 @@ class RuntimeSettingsService:
         values = await self.get_effective_values(overrides=overrides)
         return {
             "api_key": values.get("voyage.api_key") or "",
+            "base_url": values.get("voyage.base_url") or "https://api.voyageai.com/v1",
             "model": values.get("voyage.model") or "voyage-3-large",
             "rerank_model": values.get("voyage.rerank_model") or "rerank-2.5",
         }
@@ -521,6 +522,7 @@ class RuntimeSettingsService:
             key
             for key, value in {
                 "voyage.api_key": config.get("api_key"),
+                "voyage.base_url": config.get("base_url"),
                 "voyage.model": config.get("model"),
                 "voyage.rerank_model": config.get("rerank_model"),
             }.items()
@@ -535,12 +537,12 @@ class RuntimeSettingsService:
 
         client = None
         try:
-            client = VoyageClient(api_key=config["api_key"], model=config["model"])
+            client = VoyageClient(api_key=config["api_key"], model=config["model"], base_url=config["base_url"])
             await client.embed_query("test")
             return {
                 "section": "voyage",
                 "status": "healthy",
-                "detail": f"Voyage embeddings connection is healthy for model {config['model']}.",
+                "detail": f"Voyage embeddings connection is healthy for model {config['model']} at {config['base_url']}.",
             }
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
@@ -555,7 +557,7 @@ class RuntimeSettingsService:
                 "section": "voyage",
                 "status": "unhealthy",
                 "detail": (
-                    f"Voyage embeddings returned HTTP {status_code} for model {config['model']}."
+                    f"Voyage embeddings returned HTTP {status_code} for model {config['model']} at {config['base_url']}."
                     " Check the Voyage API key, account/project entitlement, and selected embedding model."
                     f"{response_detail}"
                 ),

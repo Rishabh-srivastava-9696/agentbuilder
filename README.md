@@ -111,6 +111,7 @@ Minimum local values:
 ```env
 OPENAI_API_KEY=sk-...
 VOYAGE_API_KEY=pa-...
+VOYAGE_BASE_URL=https://api.voyageai.com/v1
 SECRET_KEY=<openssl rand -hex 32>
 PII_ENCRYPTION_KEY=<openssl rand -hex 32>
 ADMIN_API_KEY=<openssl rand -hex 32>
@@ -124,6 +125,8 @@ ENVIRONMENT=production
 DEBUG=false
 ALLOW_ADMIN_KEY_BYPASS=false
 ```
+
+Use `VOYAGE_BASE_URL=https://ai.mongodb.com/v1` when the key is a MongoDB Atlas Model API key.
 
 Optional integrations:
 

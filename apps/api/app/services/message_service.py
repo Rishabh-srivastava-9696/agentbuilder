@@ -373,8 +373,10 @@ class MessageService:
                 brand_id=brand_slug,
                 voyage_api_key=voyage_config["api_key"] or None,
                 voyage_model=voyage_config["model"],
+                voyage_base_url=voyage_config["base_url"],
                 rerank_api_key=voyage_config["api_key"] or None,
                 rerank_model=voyage_config["rerank_model"],
+                rerank_base_url=voyage_config["base_url"],
             )
             logger.info("retrieval_pipeline_initialized", brand_id=brand_slug)
         except Exception as e:

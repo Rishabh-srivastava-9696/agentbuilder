@@ -39,6 +39,7 @@ class KnowledgeService:
         config = await self.runtime_settings_service.get_voyage_runtime_config()
         return {
             "api_key": config["api_key"],
+            "base_url": config["base_url"],
             "model": config["model"],
         }
     
@@ -831,6 +832,7 @@ class KnowledgeService:
         """Generate embeddings using Voyage AI."""
         voyage_config = await self._get_voyage_runtime_config()
         api_key = voyage_config["api_key"]
+        base_url = voyage_config["base_url"].rstrip("/")
         model = voyage_config["model"]
         if not api_key:
             logger.warning("voyage_api_key_not_configured", texts_count=len(texts))
@@ -839,7 +841,7 @@ class KnowledgeService:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    "https://api.voyageai.com/v1/embeddings",
+                    f"{base_url}/embeddings",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"

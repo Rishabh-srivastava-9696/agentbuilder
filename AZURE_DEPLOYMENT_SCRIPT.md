@@ -94,8 +94,12 @@ AZURE_OPENAI_ENDPOINT="https://<resource>.cognitiveservices.azure.com"
 AZURE_OPENAI_API_VERSION="2025-04-01-preview"
 
 VOYAGE_API_KEY="..."
+VOYAGE_BASE_URL="https://api.voyageai.com/v1"
 VOYAGE_MODEL="voyage-3-large"
 VOYAGE_RERANK_MODEL="rerank-2.5"
+
+# If you are using a MongoDB Atlas Model API key instead of a native Voyage key,
+# set VOYAGE_BASE_URL="https://ai.mongodb.com/v1".
 
 API_CORS_ALLOW_ORIGINS="https://agentbuilder-api.example.com,https://agentbuilder-admin.example.com,https://agentbuilder-widget.example.com,https://agentbuilder-shopify.example.com,https://agentbuilder-strapi.example.com"
 

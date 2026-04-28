@@ -22,10 +22,12 @@ class CrossEncoderReranker:
         self,
         api_key: Optional[str] = None,
         model: str = "rerank-2.5",
-        use_api: bool = True
+        use_api: bool = True,
+        base_url: str = "https://api.voyageai.com/v1",
     ):
         self.api_key = api_key or os.getenv("VOYAGE_API_KEY")
         self.model = model
+        self.base_url = (base_url or "https://api.voyageai.com/v1").rstrip("/")
         self.use_api = use_api and bool(self.api_key)
         
         if self.use_api:
@@ -36,7 +38,7 @@ class CrossEncoderReranker:
                 },
                 timeout=30.0
             )
-            logger.info("Reranker initialized with API", model=model)
+            logger.info("Reranker initialized with API", base_url=self.base_url, model=model)
         else:
             self.client = None
             logger.info("Reranker initialized in fallback mode")
@@ -87,7 +89,7 @@ class CrossEncoderReranker:
             
             # Call rerank API
             response = await self.client.post(
-                "https://api.voyageai.com/v1/rerank",
+                f"{self.base_url}/rerank",
                 json={
                     "query": query,
                     "documents": documents,
@@ -179,7 +181,7 @@ class CrossEncoderReranker:
             # Simple test rerank
             test_docs = ["This is a test document"]
             response = await self.client.post(
-                "https://api.voyageai.com/v1/rerank",
+                f"{self.base_url}/rerank",
                 json={
                     "query": "test",
                     "documents": test_docs,
