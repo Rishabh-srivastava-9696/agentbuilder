@@ -18,20 +18,11 @@ import {
   getDefaultDeployment,
   isAzureOpenAIProvider,
 } from '../utils/llmOptions';
+import { buildEmbedCode, buildWidgetUrl, getWidgetBaseUrl } from '../utils/widget';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
 type StepStatus = 'complete' | 'current' | 'upcoming';
-
-function getWidgetBaseUrl(): string {
-  const runtimeWidgetUrl = window.__APP_CONFIG__?.WIDGET_BASE_URL;
-  const envWidgetUrl = process.env.REACT_APP_WIDGET_URL;
-  return (runtimeWidgetUrl || envWidgetUrl || 'http://localhost:5174').replace(/\/+$/, '');
-}
-
-function buildEmbedCode(widgetBaseUrl: string, agentId: string): string {
-  return `<script src="${widgetBaseUrl}/embed.js" data-agent-id="${agentId}" async></script>`;
-}
 
 function parseStructuredField(value: string, fallback: any): any {
   if (!value?.trim()) {
@@ -663,7 +654,7 @@ export default function AgentWizard() {
           deployedAgent: {
             id: createdAgent.id,
             name: createdAgent.name,
-            url: `http://localhost:5174/?agent_id=${createdAgent.id}&open=1`
+            url: buildWidgetUrl(createdAgent.id)
           }
         }
       });

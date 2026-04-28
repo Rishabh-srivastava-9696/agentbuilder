@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, documentApi, Agent, KnowledgeDocument } from '../api/client';
+import { buildEmbedCode, getWidgetBaseUrl } from '../utils/widget';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -27,16 +28,6 @@ const DocumentTypeIcons = {
   policy: '📋',
   other: '📄',
 };
-
-function getWidgetBaseUrl(): string {
-  const runtimeWidgetUrl = window.__APP_CONFIG__?.WIDGET_BASE_URL;
-  const envWidgetUrl = process.env.REACT_APP_WIDGET_URL;
-  return (runtimeWidgetUrl || envWidgetUrl || 'http://localhost:5174').replace(/\/+$/, '');
-}
-
-function buildEmbedCode(widgetBaseUrl: string, agentId: string): string {
-  return `<script src="${widgetBaseUrl}/embed.js" data-agent-id="${agentId}" async></script>`;
-}
 
 export default function AgentDetail() {
   const { id } = useParams<{ id: string }>();

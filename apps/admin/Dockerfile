@@ -35,6 +35,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker-entrypoint.sh /docker-entrypoint.d/40-runtime-config.sh
 
 ENV API_BASE_URL=http://localhost:8000
+ENV WIDGET_BASE_URL=http://localhost:5174
 
 RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh
 

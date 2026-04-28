@@ -5,6 +5,7 @@ import { PlusIcon, CpuChipIcon, TrashIcon, PencilIcon, CheckCircleIcon, XCircleI
 import { api, Agent } from '../api/client';
 import { ApiError, showErrorAlert } from '../api/errorHandler';
 import { getModelLabel, getProviderLabel } from '../utils/llmOptions';
+import { buildWidgetUrl } from '../utils/widget';
 
 export default function Agents() {
   const queryClient = useQueryClient();
@@ -66,6 +67,8 @@ export default function Agents() {
     const newStatus = agent.status === 'active' ? 'inactive' : 'active';
     updateStatusMutation.mutate({ id: agent.id, status: newStatus });
   };
+
+  const widgetUrlFor = (agentId: string) => buildWidgetUrl(agentId);
 
   if (isLoading) {
     return (
@@ -221,7 +224,7 @@ export default function Agents() {
                   {agent.status === 'active' && (
                     <div className="mb-3">
                       <a
-                        href={`http://localhost:5174/?agent_id=${agent.id}&open=1`}
+                        href={widgetUrlFor(agent.id)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1.5 rounded-md border border-blue-200 hover:bg-blue-100 transition-colors"
