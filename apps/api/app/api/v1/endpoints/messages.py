@@ -282,13 +282,6 @@ async def admin_websocket_endpoint(
     ):
         return
     settings = get_settings()
-    if not settings.ENABLE_HUMAN_TAKEOVER:
-        logger.warning(
-            "admin_websocket_rejected_human_takeover_disabled",
-            conversation_id=conversation_id,
-        )
-        await _close_websocket(websocket, "Human takeover is disabled")
-        return
 
     admin_key = websocket.headers.get("x-admin-key") or websocket.query_params.get("admin_key")
     trusted_strapi_origin = (
@@ -324,6 +317,21 @@ async def admin_websocket_endpoint(
             msg_type = msg.get("type")
 
             if msg_type == "take_control":
+                if not settings.ENABLE_HUMAN_TAKEOVER:
+                    logger.warning(
+                        "admin_take_control_rejected_human_takeover_disabled",
+                        conversation_id=conversation_id,
+                    )
+                    await ws_manager.send_to_admin(conversation_id, {
+                        "type": "system_notice",
+                        "content": "Human takeover is disabled for this environment",
+                    })
+                    await ws_manager.send_to_admin(conversation_id, {
+                        "type": "control_status",
+                        "is_human_in_control": False,
+                    })
+                    continue
+
                 await ws_manager.set_human_control(conversation_id, True)
                 await ws_manager.send_to_admin(conversation_id, {
                     "type": "control_status",
@@ -376,6 +384,18 @@ async def admin_websocket_endpoint(
 
             elif msg_type == "admin_message":
                 content = msg.get("content", "")
+                if not settings.ENABLE_HUMAN_TAKEOVER or not await ws_manager.is_human_in_control(conversation_id):
+                    logger.warning(
+                        "admin_message_rejected_not_in_human_control",
+                        conversation_id=conversation_id,
+                        human_takeover_enabled=settings.ENABLE_HUMAN_TAKEOVER,
+                    )
+                    await ws_manager.send_to_admin(conversation_id, {
+                        "type": "system_notice",
+                        "content": "Take control before sending messages to the visitor",
+                    })
+                    continue
+
                 # Deliver to widget
                 await ws_manager.send_to_widget(conversation_id, {
                     "type": "admin_message",
@@ -426,15 +446,6 @@ async def widget_control_channel(
         conversation_id=conversation_id,
     ):
         return
-    if not settings.ENABLE_HUMAN_TAKEOVER:
-        logger.warning(
-            "widget_control_rejected_human_takeover_disabled",
-            conversation_id=conversation_id,
-            agent_id=agent_id,
-        )
-        await _close_websocket(websocket, "Human takeover is disabled")
-        return
-
     control_secret = (websocket.query_params.get("control_secret") or "").strip()
     is_authorized = await ws_manager.authorize_widget_control(
         conversation_id,
