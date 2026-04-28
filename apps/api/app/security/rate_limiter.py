@@ -112,7 +112,6 @@ class RateLimiter:
             Tuple of (is_allowed, info_dict)
             info_dict contains: remaining, reset_at, limit
         """
-        redis = await self._get_redis()
         now = time.time()
         window_start = now - window
         
@@ -120,6 +119,8 @@ class RateLimiter:
         rate_key = f"rate_limit:{key}"
         
         try:
+            redis = await self._get_redis()
+
             # Use pipeline for atomic operations
             pipe = redis.pipeline()
             

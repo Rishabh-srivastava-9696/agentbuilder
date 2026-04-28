@@ -138,7 +138,7 @@ class AzureOpenAIProvider(LLMProvider):
             await self.client.responses.create(
                 model=self.deployment_name,
                 input="ping",
-                max_output_tokens=1,
+                max_output_tokens=16,
             )
             return {
                 "status": "healthy",
