@@ -137,40 +137,44 @@ class RetrievalPipeline:
                 filters["content_type"] = {"$in": content_types}
                 logger.debug("Content type filter applied", content_types=content_types)
             
-            # Step 1: Perform parallel searches
-            search_results = []
-            
-            # Vector search
+            # Step 1: Perform vector and BM25 searches concurrently.
+            search_tasks = []
+
             if self.vector_search and self.config.vector_enabled:
-                try:
-                    vector_result = await self.vector_search.search(
+                search_tasks.append((
+                    "Vector",
+                    self.vector_search.search(
                         query=query,
                         top_k=self.config.vector_top_k,
                         filters=filters,
                         similarity_threshold=self.config.similarity_threshold
                     )
-                    search_results.append(vector_result)
-                    
-                    
-                    logger.debug("Vector search completed", chunks=len(vector_result.chunks))
-                except Exception as e:
-                    logger.warning("Vector search failed", error=str(e))
-            
-            # BM25 search
+                ))
+
             if self.bm25_search and self.config.bm25_enabled:
-                try:
-                    bm25_result = await self.bm25_search.search(
+                search_tasks.append((
+                    "BM25",
+                    self.bm25_search.search(
                         query=query,
                         top_k=self.config.bm25_top_k,
                         filters=filters
                     )
-                    search_results.append(bm25_result)
-                    
-                    
-                    logger.debug("BM25 search completed", chunks=len(bm25_result.chunks))
-                except Exception as e:
-                    logger.warning("BM25 search failed", error=str(e))
-            
+                ))
+
+            search_results = []
+            if search_tasks:
+                results = await asyncio.gather(
+                    *(task for _, task in search_tasks),
+                    return_exceptions=True
+                )
+
+                for (search_name, _), result in zip(search_tasks, results):
+                    if isinstance(result, Exception):
+                        logger.warning("Retrieval search failed", search_type=search_name, error=str(result))
+                    else:
+                        search_results.append(result)
+                        logger.debug("Retrieval search completed", search_type=search_name, chunks=len(result.chunks))
+
             # If no searches succeeded, return empty result
             if not search_results:
                 logger.warning("No search results available")
