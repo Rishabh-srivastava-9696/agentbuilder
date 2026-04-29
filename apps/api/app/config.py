@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import List, Optional, Union
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -321,6 +321,38 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
+
+    @model_validator(mode="after")
+    def validate_production_settings(self):
+        if not self.is_production:
+            return self
+
+        missing = [
+            name
+            for name in [
+                "ADMIN_API_KEY",
+                "SETTINGS_ENCRYPTION_KEY",
+                "PII_ENCRYPTION_KEY",
+                "MONGODB_URI",
+                "REDIS_URL",
+            ]
+            if not str(getattr(self, name, "") or "").strip()
+        ]
+
+        if str(self.STRAPI_URL or "").strip() and not str(self.STRAPI_API_TOKEN or "").strip():
+            missing.append("STRAPI_API_TOKEN")
+
+        if str(self.STRAPI_API_TOKEN or "").strip():
+            strapi_url = str(self.STRAPI_URL or "").strip()
+            if "localhost" in strapi_url or "127.0.0.1" in strapi_url:
+                missing.append("STRAPI_URL (must not point at localhost in production)")
+
+        if missing:
+            raise ValueError(
+                "Missing or invalid production configuration: " + ", ".join(missing)
+            )
+
+        return self
 
     class Config:
         # Load from root .env (2 levels up from app/config.py)

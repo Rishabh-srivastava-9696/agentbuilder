@@ -1,12 +1,12 @@
 # NOVA Azure Deployment Script
 
-This document explains how to use the local Azure Container Apps deployment helper:
+This document explains how to use the Azure Container Apps deployment helper:
 
 ```bash
 scripts/deploy_to_azure.local.sh
 ```
 
-The script is intentionally local-only and ignored through `.git/info/exclude`, so secrets and machine-specific deployment behavior do not need to be committed to GitHub.
+The script is safe to track because secrets stay in `.env.azure`, which remains local and ignored. It validates `.env.azure` before touching Azure and can optionally print full values with `--show-secrets` for private troubleshooting.
 
 ## What It Deploys
 
@@ -113,6 +113,7 @@ DATABASE_USERNAME="strapiadmin"
 DATABASE_PASSWORD="..."
 
 STRAPI_API_TOKEN="..."
+AGENTBUILDER_ADMIN_API_KEY="..." # usually the same value as ADMIN_API_KEY
 APP_KEYS="..."
 API_TOKEN_SALT="..."
 ADMIN_JWT_SECRET="..."
@@ -133,12 +134,41 @@ From the `agentbuilder` repo root:
 
 The script will:
 
-1. Build service images in ACR.
-2. Create missing Container Apps when needed.
-3. Update each app image.
-4. Apply secrets and environment variables.
-5. Print service URLs.
-6. Run quick health checks.
+1. Validate `.env.azure`.
+2. Build service images in ACR.
+3. Create missing Container Apps when needed.
+4. Update each app image.
+5. Apply shared secrets and environment variables.
+6. Force fresh API/Strapi revisions with `CONFIG_VERSION`.
+7. Wait for latest revisions to become `Running`.
+8. Print service URLs.
+9. Run quick health checks.
+
+## Validate Without Deploying
+
+```bash
+python3 scripts/validate_azure_env.py --env-file .env.azure --service all
+```
+
+To print full secret values during private debugging:
+
+```bash
+python3 scripts/validate_azure_env.py --env-file .env.azure --service all --show-secrets
+```
+
+To make the deploy script validate and stop before Azure changes:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service all --dry-run
+```
+
+If a secret already exists in Azure Container Apps and you do not want to rotate it from `.env.azure`, use:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service all --dry-run --use-existing-secrets
+```
+
+This accepts missing local secret values only when the target Container App already has an env var pointing at an Azure secret ref. It will still fail for first-time app creation unless the required secret value is present locally.
 
 ## Deploy One Service
 
@@ -170,6 +200,22 @@ YYYYMMDDHHMMSS-<git-sha>
 ./scripts/deploy_to_azure.local.sh --service all --env-file .env.azure.production
 ```
 
+## Print Values While Deploying
+
+By default, validation shows fingerprints for secrets. For a private debugging run where you want to see exact values:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service all --show-secrets
+```
+
+You can combine this with existing Azure secrets:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service all --use-existing-secrets --show-secrets
+```
+
+Rotate any secret printed into terminals, logs, or chats after troubleshooting.
+
 ## Avoid Creating Apps
 
 Use `--no-create` when the Container Apps must already exist:
@@ -198,12 +244,15 @@ az containerapp logs show \
 curl -i "https://<api-fqdn>/health"
 curl -i "https://<shopify-fqdn>/mcp"
 curl -I "https://<strapi-fqdn>/admin"
+curl -i "https://<strapi-fqdn>/api/session-sync/health" \
+  -H "Authorization: Bearer $STRAPI_API_TOKEN"
 ```
 
 ## Notes
 
 - Rotate any keys that were pasted into terminals, chats, or logs.
 - Keep `.env.azure` local.
-- For Cloud Shell deployment, either recreate this local script there or track a sanitized production deploy script later.
+- API and Strapi must share the same `STRAPI_API_TOKEN`.
+- API `ADMIN_API_KEY` and Strapi `AGENTBUILDER_ADMIN_API_KEY` must match for Strapi live admin websocket access.
 - The API deploy is run twice when using `--service all` so final CORS and Shopify MCP URLs include the generated app URLs.
 - Use `API_CORS_ALLOW_ORIGINS` for the API allowlist. Use `SHOPIFY_CORS_ALLOW_ORIGINS` only when the Shopify MCP service needs a different allowlist.

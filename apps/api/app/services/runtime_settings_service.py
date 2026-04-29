@@ -403,6 +403,14 @@ class RuntimeSettingsService:
         *,
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if getattr(self.settings, "is_production", False):
+            return {
+                "base_url": self._normalize_container_base_url(
+                    self._trimmed_or_none(getattr(self.settings, "STRAPI_URL", "")) or ""
+                ),
+                "api_token": self._trimmed_or_none(getattr(self.settings, "STRAPI_API_TOKEN", "")) or "",
+            }
+
         values = await self.get_effective_values(overrides=overrides)
         base_url = self._normalize_container_base_url(values.get("strapi.url") or "")
         return {

@@ -19,6 +19,12 @@ def build_settings(**overrides):
     return SimpleNamespace(**base)
 
 
+class ProdSettings(SimpleNamespace):
+    @property
+    def is_production(self):
+        return self.ENVIRONMENT == "production"
+
+
 class FakeRuntimeSettingsService:
     def __init__(self, config):
         self._config = config
@@ -35,6 +41,31 @@ async def test_runtime_settings_service_resolves_strapi_values():
     assert config == {
         "base_url": "http://localhost:1337",
         "api_token": "token-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_production_strapi_config_uses_environment_not_stored_settings(monkeypatch):
+    settings = ProdSettings(
+        SECRET_KEY="test-secret-key",
+        SETTINGS_ENCRYPTION_KEY="test-settings-encryption-key",
+        PII_ENCRYPTION_KEY="pii-seed",
+        ENVIRONMENT="production",
+        STRAPI_URL="https://strapi.example.com",
+        STRAPI_API_TOKEN="env-token",
+    )
+    service = RuntimeSettingsService(settings)
+
+    async def fail_if_loaded():
+        raise AssertionError("stored runtime settings should not be loaded in production")
+
+    monkeypatch.setattr(service, "_load_stored_documents", fail_if_loaded)
+
+    config = await service.get_strapi_runtime_config()
+
+    assert config == {
+        "base_url": "https://strapi.example.com",
+        "api_token": "env-token",
     }
 
 

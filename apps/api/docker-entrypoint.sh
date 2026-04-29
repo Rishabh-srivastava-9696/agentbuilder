@@ -20,6 +20,18 @@ require_env SECRET_KEY
 
 if [ "${ENVIRONMENT:-development}" = "production" ]; then
   require_env ADMIN_API_KEY
+  require_env SETTINGS_ENCRYPTION_KEY
+  require_env PII_ENCRYPTION_KEY
+  require_env MONGODB_URI
+  require_env REDIS_URL
+  require_env STRAPI_API_TOKEN
+
+  case "${STRAPI_URL:-}" in
+    ""|*localhost*|*127.0.0.1*)
+      echo "ERROR: STRAPI_URL must point at the deployed Strapi service in production." >&2
+      exit 1
+      ;;
+  esac
 fi
 
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

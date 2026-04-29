@@ -56,7 +56,7 @@ SECTIONS: tuple[RuntimeSettingSection, ...] = (
     RuntimeSettingSection(
         id="strapi",
         title="Strapi",
-        description="Strapi dashboard provisioning and activity sync settings.",
+        description="Local/development Strapi settings. Production sync uses Azure env/secrets as the source of truth.",
     ),
     RuntimeSettingSection(
         id="qwen",
@@ -195,14 +195,14 @@ SETTINGS_REGISTRY: tuple[RuntimeSettingDefinition, ...] = (
         key="strapi.url",
         section="strapi",
         label="Strapi base URL",
-        description="Base URL for the Strapi dashboard integration.",
+        description="Base URL for local Strapi integration. In production, use STRAPI_URL in Azure env/secrets.",
         env_var="STRAPI_URL",
     ),
     RuntimeSettingDefinition(
         key="strapi.api_token",
         section="strapi",
         label="Strapi API token",
-        description="Bearer token used by Agent Builder to provision and sync Strapi data.",
+        description="Bearer token for local Strapi integration. In production, use STRAPI_API_TOKEN in Azure env/secrets.",
         env_var="STRAPI_API_TOKEN",
         input_type="password",
         secret=True,
