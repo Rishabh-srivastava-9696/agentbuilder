@@ -132,6 +132,18 @@ From the `agentbuilder` repo root:
 ./scripts/deploy_to_azure.local.sh --service all
 ```
 
+Recommended production deploy command when secrets already exist in Azure Container Apps:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service all --use-existing-secrets
+```
+
+Private debugging command when you intentionally want to print the exact values being applied:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service all --use-existing-secrets --show-secrets
+```
+
 The script will:
 
 1. Validate `.env.azure`.
@@ -143,6 +155,17 @@ The script will:
 7. Wait for latest revisions to become `Running`.
 8. Print service URLs.
 9. Run quick health checks.
+
+For `--service all`, the deployment order is:
+
+1. `api`
+2. `shopify`
+3. `admin`
+4. `widget`
+5. `strapi`
+6. `api` again
+
+The second API pass is intentional. It reapplies final `CORS_ALLOW_ORIGINS` and `SHOPIFY_MCP_URL` after every public app URL exists.
 
 ## Validate Without Deploying
 
@@ -172,12 +195,71 @@ This accepts missing local secret values only when the target Container App alre
 
 ## Deploy One Service
 
+Each command below builds the service image, pushes it to ACR, updates the matching Azure Container App, applies env/secrets for that service, waits for the latest revision to become `Running`, and then runs the shared health checks.
+
+API:
+
 ```bash
 ./scripts/deploy_to_azure.local.sh --service api
+```
+
+Admin dashboard:
+
+```bash
 ./scripts/deploy_to_azure.local.sh --service admin
+```
+
+Widget:
+
+```bash
 ./scripts/deploy_to_azure.local.sh --service widget
+```
+
+Shopify MCP:
+
+```bash
 ./scripts/deploy_to_azure.local.sh --service shopify
+```
+
+The alias `shopify-mcp` is also accepted:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service shopify-mcp
+```
+
+Strapi:
+
+```bash
 ./scripts/deploy_to_azure.local.sh --service strapi
+```
+
+For production updates where Azure secrets should be reused rather than overwritten from `.env.azure`, add `--use-existing-secrets`:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service api --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service admin --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service widget --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service shopify --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service strapi --use-existing-secrets
+```
+
+Recommended order when deploying services manually:
+
+1. API first, so backend routes and shared runtime config are available.
+2. Shopify MCP, so API can point tools at the MCP endpoint.
+3. Admin and widget, so frontend runtime config points at the production API.
+4. Strapi, so admin/session sync and websocket settings are refreshed.
+5. API again, so final CORS and `SHOPIFY_MCP_URL` include all live URLs.
+
+Copy-paste manual production sequence:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service api --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service shopify --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service admin --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service widget --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service strapi --use-existing-secrets
+./scripts/deploy_to_azure.local.sh --service api --use-existing-secrets
 ```
 
 ## Reuse An Existing Image
@@ -186,6 +268,12 @@ Use this when you only want to reapply env vars or app configuration:
 
 ```bash
 ./scripts/deploy_to_azure.local.sh --service api --use-existing-image --tag <existing-tag>
+```
+
+You can combine existing-image and existing-secret mode:
+
+```bash
+./scripts/deploy_to_azure.local.sh --service api --use-existing-image --tag <existing-tag> --use-existing-secrets
 ```
 
 The default tag format is:
@@ -226,12 +314,26 @@ Use `--no-create` when the Container Apps must already exist:
 
 ## Useful Verification Commands
 
+Set URLs from Azure Container Apps:
+
+```bash
+export API_URL="https://$(az containerapp show --name agentbuilder-api --resource-group nova-prod-rg --query properties.configuration.ingress.fqdn -o tsv)"
+export ADMIN_URL="https://$(az containerapp show --name agentbuilder-admin --resource-group nova-prod-rg --query properties.configuration.ingress.fqdn -o tsv)"
+export WIDGET_URL="https://$(az containerapp show --name agentbuilder-widget --resource-group nova-prod-rg --query properties.configuration.ingress.fqdn -o tsv)"
+export SHOPIFY_URL="https://$(az containerapp show --name agentbuilder-shopify --resource-group nova-prod-rg --query properties.configuration.ingress.fqdn -o tsv)"
+export STRAPI_URL="https://$(az containerapp show --name agentbuilder-strapi --resource-group nova-prod-rg --query properties.configuration.ingress.fqdn -o tsv)"
+```
+
+Check latest revisions:
+
 ```bash
 az containerapp revision list \
   --name agentbuilder-api \
   --resource-group nova-prod-rg \
   -o table
 ```
+
+Check logs:
 
 ```bash
 az containerapp logs show \
@@ -240,13 +342,26 @@ az containerapp logs show \
   --tail 100
 ```
 
+Smoke test service health:
+
 ```bash
-curl -i "https://<api-fqdn>/health"
-curl -i "https://<shopify-fqdn>/mcp"
-curl -I "https://<strapi-fqdn>/admin"
-curl -i "https://<strapi-fqdn>/api/session-sync/health" \
+curl -i "$API_URL/health"
+curl -I "$ADMIN_URL"
+curl -I "$WIDGET_URL"
+curl -i "$SHOPIFY_URL/health"
+curl -i "$SHOPIFY_URL/mcp"
+curl -I "$STRAPI_URL/admin"
+curl -i "$STRAPI_URL/api/session-sync/health" \
   -H "Authorization: Bearer $STRAPI_API_TOKEN"
 ```
+
+Expected production health signals:
+
+- API `/health` returns `mongodb: healthy` and `redis: healthy`.
+- Shopify `/health` returns `OK`.
+- Shopify `/mcp` returns JSON with `"status": "ready"`.
+- Strapi `/admin` returns HTTP `200`.
+- Strapi `/api/session-sync/health` returns `status: ok`, production `agentBuilderApiUrl`, `wss://` `wsBaseUrl`, and `adminApiKeyConfigured: true`.
 
 ## Notes
 
