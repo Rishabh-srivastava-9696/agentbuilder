@@ -901,9 +901,10 @@ class KnowledgeService:
         parent_path = self._normalize_folder_path("/".join(folder_path.rstrip("/").split("/")[:-1]) or "/")
         now = datetime.utcnow().isoformat()
         brand_scope = await self._resolve_brand_scope(brand_id)
+        resolved_brand_id = brand_scope.get("brand_id") or brand_id
         folder_doc = {
             "id": folder_path,
-            "brand_id": brand_scope.get("brand_id") or brand_id,
+            "brand_id": resolved_brand_id,
             "brand_slug": brand_scope.get("brand_slug"),
             "agent_id": agent_id,
             "name": folder_path.rstrip("/").split("/")[-1],
@@ -913,9 +914,13 @@ class KnowledgeService:
             "updated_at": now,
         }
         collection = await self._get_knowledge_folders_collection(brand_id)
+        # `updated_at` must appear in exactly one of $setOnInsert / $set — Mongo
+        # rejects the same path in both (WriteError 40). Keep it only in $set so
+        # the timestamp refreshes on every upsert; the rest is insert-only.
+        insert_only = {key: value for key, value in folder_doc.items() if key != "updated_at"}
         await collection.update_one(
-            {"brand_id": folder_doc["brand_id"], "agent_id": agent_id, "path": folder_path},
-            {"$setOnInsert": folder_doc, "$set": {"updated_at": now}},
+            {"brand_id": resolved_brand_id, "agent_id": agent_id, "path": folder_path},
+            {"$setOnInsert": insert_only, "$set": {"updated_at": now}},
             upsert=True,
         )
         return {**folder_doc, "type": "folder"}
