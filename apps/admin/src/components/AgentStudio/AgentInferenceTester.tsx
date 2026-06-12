@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowPathIcon,
   BoltIcon,
@@ -75,7 +75,24 @@ export default function AgentInferenceTester({
     { label: 'Runtime', detail: 'Waiting for a test question', state: 'waiting' },
   ]);
   // Unique per console session so concurrent admins don't share conversation memory.
-  const [sessionId] = useState(() => Math.random().toString(36).slice(2, 10));
+  const [sessionId, setSessionId] = useState(() => Math.random().toString(36).slice(2, 10));
+
+  // Switching agents must not leak the previous agent's chat, trace, or citations.
+  // Clear all per-conversation state and start a fresh session whenever agentId changes.
+  useEffect(() => {
+    setTab('chat');
+    setMessage('');
+    setSubmittedMessage('');
+    setAnswer('');
+    setError('');
+    setLatencyMs(null);
+    setLoading(false);
+    setCitations([]);
+    setContextUsed(null);
+    setConfidence(null);
+    setTrace([{ label: 'Runtime', detail: 'Waiting for a test question', state: 'waiting' }]);
+    setSessionId(Math.random().toString(36).slice(2, 10));
+  }, [agentId]);
 
   const displayLatency = useMemo(() => {
     if (latencyMs === null) return '-';
