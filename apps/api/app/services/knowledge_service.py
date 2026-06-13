@@ -925,6 +925,102 @@ class KnowledgeService:
         )
         return {**folder_doc, "type": "folder"}
 
+    async def _find_folder_doc(
+        self,
+        brand_id: str,
+        path: str,
+        agent_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the stored folder document for a normalized path, if it exists."""
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        folders_collection = await self._get_knowledge_folders_collection(brand_id)
+        query = {"brand_id": brand_scope.get("brand_id") or brand_id, "path": self._normalize_folder_path(path)}
+        if agent_id:
+            query["agent_id"] = agent_id
+        return await folders_collection.find_one(query)
+
+    async def _cascade_folder_path_change(
+        self,
+        brand_id: str,
+        old_path: str,
+        new_path: str,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Re-point every descendant folder and document when a folder moves/renames.
+
+        A folder at ``old_path`` becomes ``new_path``; everything nested under it
+        (subfolders + documents) has its stored path prefix rewritten so the tree
+        stays consistent. Idempotent and safe when old_path == new_path.
+        """
+        old_path = self._normalize_folder_path(old_path)
+        new_path = self._normalize_folder_path(new_path)
+        # Reparenting TO root (new_path == "/") is valid (e.g. folder delete);
+        # only the root itself can't move, and same-path is a no-op.
+        if old_path == "/" or old_path == new_path:
+            return {"folders": 0, "documents": 0}
+
+        now = datetime.utcnow().isoformat()
+        old_prefix = old_path + "/"
+
+        def repoint(value: str) -> str:
+            if value == old_path:
+                return new_path
+            if value.startswith(old_prefix):
+                # Normalize to avoid '//sub' when new_path is root.
+                return self._normalize_folder_path(new_path + value[len(old_path):])
+            return value
+
+        # 1. Descendant folder docs (the folder itself is handled by the caller).
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        folders_collection = await self._get_knowledge_folders_collection(brand_id)
+        folder_query: Dict[str, Any] = {
+            "brand_id": brand_scope.get("brand_id") or brand_id,
+            "path": {"$regex": f"^{re.escape(old_prefix)}"},
+        }
+        if agent_id:
+            folder_query["agent_id"] = agent_id
+        folders_updated = 0
+        async for child in folders_collection.find(folder_query):
+            child_path = child.get("path") or ""
+            updated_path = repoint(child_path)
+            updated_parent = repoint(child.get("parent_path") or "/")
+            await folders_collection.update_one(
+                {"_id": child["_id"]},
+                {"$set": {"path": updated_path, "id": updated_path, "parent_path": updated_parent, "updated_at": now}},
+            )
+            folders_updated += 1
+
+        # 2. Documents stored under the old path (in the folder or any descendant).
+        brand_aliases = brand_scope.get("aliases") or [brand_id]
+        docs_updated = 0
+        for collection in await self._get_brand_knowledge_collections(brand_id):
+            doc_query: Dict[str, Any] = {
+                "$and": [
+                    {"$or": [
+                        {"metadata.folder": old_path},
+                        {"metadata.folder": {"$regex": f"^{re.escape(old_prefix)}"}},
+                    ]},
+                    {"$or": [
+                        {"metadata.brand_id": {"$in": brand_aliases}},
+                        {"metadata.brand_slug": {"$in": brand_aliases}},
+                    ]},
+                ]
+            }
+            if agent_id:
+                doc_query["$and"].append({"metadata.agent_id": agent_id})
+            async for doc in collection.find(doc_query):
+                meta = doc.get("metadata") or {}
+                new_folder = repoint(self._normalize_folder_path(meta.get("folder")))
+                name = meta.get("name") or doc.get("title") or doc.get("doc_id")
+                _, _, new_doc_path = self._normalize_item_path(new_folder, name)
+                await collection.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"metadata.folder": new_folder, "metadata.path": new_doc_path, "metadata.updated_at": now}},
+                )
+                docs_updated += 1
+
+        return {"folders": folders_updated, "documents": docs_updated}
+
     async def move_item(
         self,
         brand_id: str,
@@ -937,6 +1033,25 @@ class KnowledgeService:
         brand_aliases = brand_scope.get("aliases") or [brand_id]
         updated = 0
         item_name = None
+
+        # Folder move: reparent the folder doc under target_folder, then cascade
+        # every descendant folder + document to the new path prefix.
+        folder_doc = await self._find_folder_doc(brand_id, item_id, agent_id)
+        if folder_doc:
+            folder_name = folder_doc.get("name") or self._normalize_folder_path(item_id).rstrip("/").split("/")[-1]
+            new_path = self._normalize_item_path(target_folder, folder_name)[2]
+            if new_path == self._normalize_folder_path(item_id):
+                return {"id": new_path, "type": "folder", "path": new_path, "parent_path": target_folder}
+            if new_path == folder_doc.get("path") or new_path.startswith((folder_doc.get("path") or "") + "/"):
+                raise ValueError("Cannot move a folder into itself")
+            now = datetime.utcnow().isoformat()
+            folders_collection = await self._get_knowledge_folders_collection(brand_id)
+            await folders_collection.update_one(
+                {"_id": folder_doc["_id"]},
+                {"$set": {"path": new_path, "id": new_path, "parent_path": target_folder, "updated_at": now}},
+            )
+            await self._cascade_folder_path_change(brand_id, folder_doc.get("path"), new_path, agent_id)
+            return {"id": new_path, "type": "folder", "path": new_path, "parent_path": target_folder}
 
         for collection in await self._get_brand_knowledge_collections(brand_id):
             query = {
@@ -996,8 +1111,15 @@ class KnowledgeService:
         folder_doc = await folders_collection.find_one(folder_query)
         if folder_doc:
             parent = folder_doc.get("parent_path") or "/"
+            old_path = folder_doc.get("path") or item_id
             new_path = self._normalize_item_path(parent, clean_name)[2]
-            await folders_collection.update_one(folder_query, {"$set": {"name": clean_name, "path": new_path, "id": new_path, "updated_at": datetime.utcnow().isoformat()}})
+            if new_path != old_path:
+                await folders_collection.update_one(
+                    {"_id": folder_doc["_id"]},
+                    {"$set": {"name": clean_name, "path": new_path, "id": new_path, "updated_at": datetime.utcnow().isoformat()}},
+                )
+                # Re-point descendant folders + documents to the renamed path.
+                await self._cascade_folder_path_change(brand_id, old_path, new_path, agent_id)
             return {"id": new_path, "type": "folder", "name": clean_name, "path": new_path, "parent_path": parent}
 
         updated = 0
@@ -1218,9 +1340,55 @@ class KnowledgeService:
                     ]
                 })
                 deleted_count += result.deleted_count
-        
+
         return deleted_count > 0
-    
+
+    async def delete_item(self, item_id: str, brand_id: str, agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """Delete a knowledge item — folder or document.
+
+        Folders are non-destructive by default: contained documents are reparented
+        to the deleted folder's parent so no embedded knowledge is lost, then the
+        folder and its descendant folders are removed. Documents delete their chunks.
+        """
+        folder_doc = await self._find_folder_doc(brand_id, item_id, agent_id)
+        if folder_doc:
+            return await self.delete_folder(brand_id, folder_doc, agent_id)
+        deleted = await self.delete_document(item_id, brand_id=brand_id)
+        return {"deleted": deleted, "type": "file"}
+
+    async def delete_folder(
+        self,
+        brand_id: str,
+        folder_doc: Dict[str, Any],
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove a folder and its descendant folders; reparent contained docs to the parent."""
+        folder_path = self._normalize_folder_path(folder_doc.get("path"))
+        parent_path = self._normalize_folder_path(folder_doc.get("parent_path") or "/")
+
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        folders_collection = await self._get_knowledge_folders_collection(brand_id)
+        prefix = folder_path + "/"
+
+        # Delete the folder records FIRST (before cascade would rename them out of
+        # this path prefix), then reparent the contained documents to the parent.
+        delete_query: Dict[str, Any] = {
+            "brand_id": brand_scope.get("brand_id") or brand_id,
+            "$or": [{"path": folder_path}, {"path": {"$regex": f"^{re.escape(prefix)}"}}],
+        }
+        if agent_id:
+            delete_query["agent_id"] = agent_id
+        result = await folders_collection.delete_many(delete_query)
+
+        # Reparent every document under this folder (and descendants) up to the parent.
+        reparented = await self._cascade_folder_path_change(brand_id, folder_path, parent_path, agent_id)
+        return {
+            "deleted": result.deleted_count > 0,
+            "type": "folder",
+            "deleted_folders": result.deleted_count,
+            "reparented_documents": reparented.get("documents", 0),
+        }
+
     # ========================================================================
     # Helper Methods
     # ========================================================================

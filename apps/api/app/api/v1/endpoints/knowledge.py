@@ -108,6 +108,9 @@ class FolderCreateRequest(BaseModel):
 
 class KnowledgeMoveRequest(BaseModel):
     brand_id: str
+    # item_id may carry a slash (folder paths like "/Guides"), so it travels in
+    # the body, not the URL path, to avoid path-param routing breakage.
+    item_id: Optional[str] = None
     target_folder: Optional[str] = None
     folder_path: Optional[str] = None
     agent_id: Optional[str] = None
@@ -115,6 +118,7 @@ class KnowledgeMoveRequest(BaseModel):
 
 class KnowledgeRenameRequest(BaseModel):
     brand_id: str
+    item_id: Optional[str] = None
     name: str
     agent_id: Optional[str] = None
 
@@ -420,13 +424,89 @@ async def create_folder(
         raise HTTPException(status_code=500, detail=f"Failed to create folder: {str(e)}")
 
 
+@router.patch("/items/move")
+async def move_knowledge_item_by_body(
+    request: KnowledgeMoveRequest,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+):
+    """Move a knowledge item (file or folder) — id carried in the body so folder
+    paths with slashes route correctly."""
+    if not request.item_id:
+        raise HTTPException(status_code=400, detail="item_id is required")
+    try:
+        item = await knowledge_service.move_item(
+            brand_id=request.brand_id,
+            item_id=request.item_id,
+            target_folder=request.target_folder or request.folder_path or "/",
+            agent_id=request.agent_id,
+        )
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Knowledge item not found: {request.item_id}")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to move knowledge item", item_id=request.item_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to move item: {str(e)}")
+
+
+@router.patch("/items/rename")
+async def rename_knowledge_item_by_body(
+    request: KnowledgeRenameRequest,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+):
+    """Rename a knowledge item (file or folder) — id carried in the body."""
+    if not request.item_id:
+        raise HTTPException(status_code=400, detail="item_id is required")
+    try:
+        item = await knowledge_service.rename_item(
+            brand_id=request.brand_id,
+            item_id=request.item_id,
+            name=request.name,
+            agent_id=request.agent_id,
+        )
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Knowledge item not found: {request.item_id}")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to rename knowledge item", item_id=request.item_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to rename item: {str(e)}")
+
+
+@router.delete("/items")
+async def delete_knowledge_item_by_query(
+    item_id: str,
+    brand_id: str,
+    agent_id: Optional[str] = None,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+):
+    """Delete a knowledge item (file or folder) — id in query so folder paths
+    with slashes route correctly. Folders reparent their documents to the parent."""
+    try:
+        result = await knowledge_service.delete_item(item_id, brand_id=brand_id, agent_id=agent_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail=f"Knowledge item not found: {item_id}")
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete knowledge item", item_id=item_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete item: {str(e)}")
+
+
 @router.patch("/items/{item_id}/move")
 async def move_knowledge_item(
     item_id: str,
     request: KnowledgeMoveRequest,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service)
 ):
-    """Move a knowledge item to another folder."""
+    """Move a knowledge item to another folder (legacy path-param route)."""
     try:
         item = await knowledge_service.move_item(
             brand_id=request.brand_id,
@@ -437,6 +517,8 @@ async def move_knowledge_item(
         if not item:
             raise HTTPException(status_code=404, detail=f"Knowledge item not found: {item_id}")
         return {"success": True, "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -476,12 +558,12 @@ async def delete_knowledge_item(
     brand_id: str,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service)
 ):
-    """Delete a knowledge file item and its chunks."""
+    """Delete a knowledge item and its chunks (legacy path-param route)."""
     try:
-        deleted = await knowledge_service.delete_document(item_id, brand_id=brand_id)
-        if not deleted:
+        result = await knowledge_service.delete_item(item_id, brand_id=brand_id)
+        if not result.get("deleted"):
             raise HTTPException(status_code=404, detail=f"Knowledge item not found: {item_id}")
-        return {"success": True, "message": f"Deleted knowledge item {item_id}"}
+        return {"success": True, "message": f"Deleted knowledge item {item_id}", **result}
     except HTTPException:
         raise
     except Exception as e:

@@ -171,12 +171,13 @@ export const knowledgeApi = {
 
   /**
    * Move a folder or document to another folder.
+   * The id travels in the body so folder paths with slashes route correctly.
    */
   async moveItem(itemId: string, data: MoveKnowledgeItemRequest) {
-    const response = await apiClient.patch(
-      `/api/v1/knowledge/items/${encodeURIComponent(itemId)}/move`,
-      data
-    );
+    const response = await apiClient.patch('/api/v1/knowledge/items/move', {
+      ...data,
+      item_id: itemId,
+    });
     return response.data;
   },
 
@@ -184,25 +185,25 @@ export const knowledgeApi = {
    * Rename a folder or document.
    */
   async renameItem(itemId: string, data: RenameKnowledgeItemRequest) {
-    const response = await apiClient.patch(
-      `/api/v1/knowledge/items/${encodeURIComponent(itemId)}/rename`,
-      data
-    );
+    const response = await apiClient.patch('/api/v1/knowledge/items/rename', {
+      ...data,
+      item_id: itemId,
+    });
     return response.data;
   },
 
   /**
    * Delete a folder or document from the knowledge filesystem.
+   * The id travels as a query param so folder paths with slashes route correctly.
    */
   async deleteItem(itemId: string, brandId?: string): Promise<void> {
     const params = new URLSearchParams();
+    params.append('item_id', itemId);
     if (brandId) {
       params.append('brand_id', brandId);
     }
 
-    await apiClient.delete(
-      `/api/v1/knowledge/items/${encodeURIComponent(itemId)}${params.toString() ? `?${params.toString()}` : ''}`
-    );
+    await apiClient.delete(`/api/v1/knowledge/items?${params.toString()}`);
   },
 
   /**
