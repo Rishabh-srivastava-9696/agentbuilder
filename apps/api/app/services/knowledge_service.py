@@ -993,6 +993,10 @@ class KnowledgeService:
         # 2. Documents stored under the old path (in the folder or any descendant).
         brand_aliases = brand_scope.get("aliases") or [brand_id]
         docs_updated = 0
+        # Collect Qdrant chunk re-points keyed by destination so the vector
+        # payload's folder/path stays in sync with Mongo (folder-scoped retrieval
+        # + citations otherwise go stale on the Qdrant backend).
+        qdrant_groups: Dict[tuple, list] = {}
         for collection in await self._get_brand_knowledge_collections(brand_id):
             doc_query: Dict[str, Any] = {
                 "$and": [
@@ -1018,6 +1022,16 @@ class KnowledgeService:
                     {"$set": {"metadata.folder": new_folder, "metadata.path": new_doc_path, "metadata.updated_at": now}},
                 )
                 docs_updated += 1
+                if self.qdrant and doc.get("chunk_id"):
+                    qdrant_groups.setdefault((new_folder, new_doc_path), []).append(doc["chunk_id"])
+
+        if self.qdrant and qdrant_groups:
+            brand_slug = brand_scope.get("brand_slug") or brand_id
+            for (new_folder, new_doc_path), chunk_ids in qdrant_groups.items():
+                try:
+                    await self.qdrant.reparent_chunks(chunk_ids, new_folder, new_doc_path, brand_slug=brand_slug)
+                except Exception as e:
+                    logger.error("qdrant_reparent_failed", folder=new_folder, error=str(e))
 
         return {"folders": folders_updated, "documents": docs_updated}
 

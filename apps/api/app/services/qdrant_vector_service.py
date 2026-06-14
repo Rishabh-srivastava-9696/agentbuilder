@@ -128,6 +128,45 @@ class QdrantVectorService:
         )
         return 1
 
+    async def reparent_chunks(
+        self,
+        chunk_ids: list[str],
+        folder: str,
+        path: str,
+        brand_slug: str | None = None,
+    ) -> int:
+        """Sync a document's folder/path onto its Qdrant points after a move/rename.
+
+        Updates only metadata.folder / metadata.path (and updated_at) via a nested
+        payload set, so the rest of the payload (content, chunk_index, doc_id, …)
+        is preserved. Keeps Qdrant folder-scoped retrieval and citations correct.
+        """
+        from datetime import datetime, timezone
+
+        from qdrant_client.http import models
+
+        point_ids = [qdrant_point_id(cid) for cid in chunk_ids if cid]
+        if not point_ids:
+            return 0
+
+        client = self._get_client()
+        collection = qdrant_collection_name(self.settings, brand_slug)
+        if not await client.collection_exists(collection):
+            return 0
+
+        await client.set_payload(
+            collection_name=collection,
+            payload={
+                "folder": folder,
+                "path": path,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            points=point_ids,
+            key="metadata",  # nested update — supported since qdrant-client 1.8
+            wait=True,
+        )
+        return len(point_ids)
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.close()

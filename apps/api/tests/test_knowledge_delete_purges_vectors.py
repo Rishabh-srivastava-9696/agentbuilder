@@ -62,6 +62,73 @@ async def test_delete_by_document_noop_when_collection_missing():
 
 
 @pytest.mark.asyncio
+async def test_reparent_chunks_uses_nested_metadata_update():
+    pytest.importorskip("qdrant_client")  # container-only dependency
+    svc = QdrantVectorService(_settings())
+    client = AsyncMock()
+    client.collection_exists.return_value = True
+    svc._client = client
+
+    n = await svc.reparent_chunks(["c1", "c2"], folder="/new", path="/new/doc", brand_slug="acme")
+
+    assert n == 2
+    client.set_payload.assert_awaited_once()
+    kwargs = client.set_payload.call_args.kwargs
+    assert kwargs["collection_name"] == "nova_acme_knowledge_base"
+    # Nested update touches only metadata.folder/path, never the whole payload.
+    assert kwargs["key"] == "metadata"
+    assert kwargs["payload"]["folder"] == "/new"
+    assert kwargs["payload"]["path"] == "/new/doc"
+    assert len(kwargs["points"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_cascade_syncs_qdrant_payload(monkeypatch):
+    """Moving/renaming a folder must re-point the doc's Qdrant payload too."""
+    service = KnowledgeService.__new__(KnowledgeService)
+
+    chunk = {"_id": "x", "chunk_id": "c1", "title": "manual",
+             "metadata": {"folder": "/old", "name": "manual", "brand_id": "acme", "brand_slug": "acme"}}
+
+    class FakeCursor:
+        def __init__(self, docs): self._docs = docs
+        def __aiter__(self):
+            async def gen():
+                for d in self._docs:
+                    yield d
+            return gen()
+
+    class FakeFolders:
+        def find(self, *_a, **_k): return FakeCursor([])
+
+    class FakeKB:
+        def find(self, *_a, **_k): return FakeCursor([dict(chunk)])
+        async def update_one(self, *_a, **_k): return None
+
+    async def fake_scope(_i):
+        return {"brand_id": "acme", "brand_slug": "acme", "aliases": ["acme"], "db_name": "acme"}
+    async def fake_folders_coll(_b): return FakeFolders()
+    async def fake_kb_colls(_b): return [FakeKB()]
+
+    monkeypatch.setattr(service, "_resolve_brand_scope", fake_scope)
+    monkeypatch.setattr(service, "_get_knowledge_folders_collection", fake_folders_coll)
+    monkeypatch.setattr(service, "_get_brand_knowledge_collections", fake_kb_colls)
+
+    qdrant = AsyncMock()
+    service.qdrant = qdrant
+
+    result = await service._cascade_folder_path_change("acme", "/old", "/new", agent_id=None)
+
+    assert result["documents"] == 1
+    qdrant.reparent_chunks.assert_awaited_once()
+    args, kwargs = qdrant.reparent_chunks.call_args
+    assert args[0] == ["c1"]              # chunk ids
+    assert args[1] == "/new"             # new folder
+    assert args[2] == "/new/manual"      # new doc path
+    assert kwargs["brand_slug"] == "acme"
+
+
+@pytest.mark.asyncio
 async def test_delete_document_purges_qdrant(monkeypatch):
     service = KnowledgeService.__new__(KnowledgeService)
 
