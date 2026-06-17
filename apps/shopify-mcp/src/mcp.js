@@ -15,10 +15,51 @@ function toolCacheKey(shopUrl, toolName) {
   return `${shopUrl}:${toolName}`;
 }
 
-function authUrlForShop(shopUrl) {
+function authUrlForShop(shopUrl, sessionId) {
   const baseUrl = process.env.SHOPIFY_BASE_URL || 'http://localhost:3005';
   const params = new URLSearchParams({ shop: shopUrl });
+  if (sessionId) {
+    params.set('session_id', sessionId);
+  }
   return `${baseUrl}/auth/login?${params.toString()}`;
+}
+
+function normalizeUcpToolPayload(payload, ucpAgentProfile) {
+  const toolName = payload?.params?.name;
+  const toolArgs = payload?.params?.arguments || {};
+  let normalizedArgs = { ...toolArgs };
+
+  if (toolName === 'search_catalog' && !normalizedArgs.catalog) {
+    const { query, filters, pagination, context, signals, ...rest } = normalizedArgs;
+    normalizedArgs = {
+      ...rest,
+      catalog: {
+        ...(query ? { query } : {}),
+        ...(filters ? { filters } : {}),
+        ...(pagination ? { pagination } : {}),
+        ...(context ? { context } : {}),
+        ...(signals ? { signals } : {}),
+      },
+    };
+  }
+
+  if (ucpAgentProfile) {
+    normalizedArgs.meta = {
+      ...(normalizedArgs.meta || {}),
+      'ucp-agent': {
+        ...((normalizedArgs.meta || {})['ucp-agent'] || {}),
+        profile: ucpAgentProfile,
+      },
+    };
+  }
+
+  return {
+    ...payload,
+    params: {
+      ...payload.params,
+      arguments: normalizedArgs,
+    },
+  };
 }
 
 /**
@@ -31,6 +72,14 @@ export async function handleMcpRequest(payload, session, reqHeaders) {
   }
 
   const shopUrl = reqHeaders['x-shopify-shop-url'];
+  const requestSessionId = reqHeaders['x-session-id'] || session?.id || session?.ID;
+  const ucpAgentProfile = reqHeaders['x-shopify-ucp-agent-profile'];
+  if (session && reqHeaders['x-shopify-client-id']) {
+    session.shopify_client_id = reqHeaders['x-shopify-client-id'];
+  }
+  if (session && reqHeaders['x-shopify-client-secret']) {
+    session.shopify_client_secret = reqHeaders['x-shopify-client-secret'];
+  }
   const customerToken = reqHeaders['x-customer-access-token'] || session?.customer_access_token;
   
   if (!shopUrl) {
@@ -54,7 +103,11 @@ export async function handleMcpRequest(payload, session, reqHeaders) {
     const storefrontTools = await fetchTools(endpoints.storefrontMcp);
     storefrontTools.forEach(t => toolServerMap.set(toolCacheKey(shopUrl, t.name), endpoints.storefrontMcp));
 
-    // 2. Fetch Customer Account Tools (Auth Required)
+    // 2. Fetch UCP Catalog Tools (No customer auth, UCP-shaped schemas)
+    const ucpCatalogTools = await fetchTools(endpoints.ucpCatalogMcp);
+    ucpCatalogTools.forEach(t => toolServerMap.set(toolCacheKey(shopUrl, t.name), endpoints.ucpCatalogMcp));
+
+    // 3. Fetch Customer Account Tools (Auth Required)
     let customerTools = [];
     if (customerToken) {
       customerTools = await fetchTools(endpoints.customerAccountMcp, {
@@ -67,7 +120,7 @@ export async function handleMcpRequest(payload, session, reqHeaders) {
       jsonrpc: '2.0',
       id: payload.id,
       result: {
-        tools: [...storefrontTools, ...customerTools]
+        tools: [...ucpCatalogTools, ...storefrontTools, ...customerTools]
       }
     };
   }
@@ -85,15 +138,25 @@ export async function handleMcpRequest(payload, session, reqHeaders) {
         targetUrl = endpoints.storefrontMcp;
         toolServerMap.set(toolCacheKey(shopUrl, name), targetUrl);
       } else {
-        targetUrl = endpoints.customerAccountMcp;
-        toolServerMap.set(toolCacheKey(shopUrl, name), targetUrl);
+        const ucpCatalogTools = await fetchTools(endpoints.ucpCatalogMcp);
+        if (ucpCatalogTools.some(t => t.name === name)) {
+          targetUrl = endpoints.ucpCatalogMcp;
+          toolServerMap.set(toolCacheKey(shopUrl, name), targetUrl);
+        } else {
+          targetUrl = endpoints.customerAccountMcp;
+          toolServerMap.set(toolCacheKey(shopUrl, name), targetUrl);
+        }
       }
+    }
+
+    if (targetUrl === endpoints.ucpCatalogMcp) {
+      payload = normalizeUcpToolPayload(payload, ucpAgentProfile);
     }
 
     const headers = {};
     if (targetUrl === endpoints.customerAccountMcp) {
       if (!customerToken) {
-        throw new AuthRequiredError(authUrlForShop(shopUrl));
+        throw new AuthRequiredError(authUrlForShop(shopUrl, requestSessionId));
       }
       headers['Authorization'] = `Bearer ${customerToken}`;
     }
@@ -103,7 +166,7 @@ export async function handleMcpRequest(payload, session, reqHeaders) {
       return result;
     } catch (err) {
       if (err.status === 401) {
-        throw new AuthRequiredError(authUrlForShop(shopUrl));
+        throw new AuthRequiredError(authUrlForShop(shopUrl, requestSessionId));
       }
       throw err;
     }

@@ -74,6 +74,32 @@ const getUrlHost = (url?: string): string => {
   }
 };
 
+const formatProductPrice = (price?: number, currency?: string): string => {
+  if (price === undefined) return '';
+
+  const displayPrice = price / 100;
+  if (!currency) {
+    return displayPrice.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(displayPrice);
+  } catch {
+    return `${currency} ${displayPrice.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+};
+
 // Fetch product details from API
 const fetchProductDetails = async (skus: string[], agentId: string): Promise<Product[]> => {
   try {
@@ -280,7 +306,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                       {relatedProduct && relatedProduct.category && (
                         <p className="citation-snippet">
                           Category: {relatedProduct.category}
-                          {relatedProduct.price && ` • ${relatedProduct.currency === 'INR' ? '₹' : '$'}${relatedProduct.price.toLocaleString()}`}
+                          {relatedProduct.price && ` • ${formatProductPrice(relatedProduct.price, relatedProduct.currency)}`}
                         </p>
                       )}
                     </div>

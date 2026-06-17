@@ -10,8 +10,6 @@ interface ShopifyTabProps {
 
 export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProps) {
   const [storeUrl, setStoreUrl] = useState('');
-  const [showTokenField, setShowTokenField] = useState(false);
-  const [accessToken, setAccessToken] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [progress, setProgress] = useState(0);
   const [totalItems, setTotalItems] = useState(0);
@@ -32,8 +30,7 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
     try {
       const { job_id } = await catalogApi.importShopify(
         storeUrl.trim(),
-        brandId,
-        accessToken.trim() || undefined
+        brandId
       );
       pollRef.current = setInterval(async () => {
         try {
@@ -68,7 +65,7 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
         <div>
           <h3 className="text-sm font-semibold text-gray-900">Sync from Shopify</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Fetches all products via <code className="bg-gray-100 px-1 rounded">/products.json</code>. No API key needed for public stores.
+            Imports public product context as a cache. Runtime Shopify agents should use Storefront MCP / UCP from Agent Configuration.
           </p>
         </div>
         {status === 'done' && (
@@ -96,33 +93,10 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
         />
       </div>
 
-      {/* Private store toggle */}
-      <div>
-        <button
-          type="button"
-          onClick={() => setShowTokenField(v => !v)}
-          className="text-sm text-primary-600 hover:text-primary-800 font-medium"
-        >
-          {showTokenField ? '▾' : '▸'} My store is private / password-protected
-        </button>
-        {showTokenField && (
-          <div className="mt-3 space-y-1">
-            <label className="block text-sm font-medium text-gray-700">
-              Shopify Admin API Access Token
-            </label>
-            <input
-              type="password"
-              value={accessToken}
-              onChange={e => setAccessToken(e.target.value)}
-              placeholder="shpat_xxxxxxxxxxxxxxxxxxxxxx"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500"
-            />
-            <p className="text-xs text-gray-500">
-              Create a token in Shopify Admin → Apps → Develop apps. Needs <code className="bg-gray-100 px-1 rounded">read_products</code> scope.
-            </p>
-          </div>
-        )}
-      </div>
+      <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+        Shopify no longer relies on legacy pasted tokens for the agent path. Configure the store domain,
+        UCP profile, and app client credentials in the agent dashboard for live MCP/UCP behavior.
+      </p>
 
       {/* Progress */}
       {status === 'loading' && (
@@ -194,7 +168,6 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
           brandId={brandId}
           sourceType="shopify"
           sourceUrl={storeUrl}
-          accessToken={accessToken || undefined}
           onClose={() => setShowSyncModal(false)}
         />
       )}

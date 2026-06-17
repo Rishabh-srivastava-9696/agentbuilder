@@ -158,9 +158,17 @@ app.get('/auth/login', async (req, res) => {
   req.session.code_verifier = codeVerifier;
   req.session.oauth_state = state;
   req.session.shop_url = shopUrl;
+  if (forcedSessionId) {
+    req.session.forced_session_id = forcedSessionId;
+    sessionStore.set(forcedSessionId, req.session, (err) => {
+      if (err) {
+        console.error('Failed to save forced Shopify MCP session:', err);
+      }
+    });
+  }
 
   const authParams = new URLSearchParams({
-    client_id: process.env.SHOPIFY_CLIENT_ID,
+    client_id: req.session.shopify_client_id || process.env.SHOPIFY_CLIENT_ID,
     scope: 'openid email customer_read_customers customer_read_orders', // Add required scopes
     redirect_uri: process.env.SHOPIFY_REDIRECT_URI || `http://localhost:3005/auth/callback`,
     state: state,
@@ -183,8 +191,8 @@ app.get('/auth/callback', async (req, res) => {
   const endpoints = await discoverMcpEndpoints(req.session.shop_url);
   
   const tokenParams = new URLSearchParams({
-    client_id: process.env.SHOPIFY_CLIENT_ID,
-    client_secret: process.env.SHOPIFY_CLIENT_SECRET, // If required for your app type
+    client_id: req.session.shopify_client_id || process.env.SHOPIFY_CLIENT_ID,
+    client_secret: req.session.shopify_client_secret || process.env.SHOPIFY_CLIENT_SECRET,
     grant_type: 'authorization_code',
     code: code,
     redirect_uri: process.env.SHOPIFY_REDIRECT_URI || `http://localhost:3005/auth/callback`,
@@ -202,6 +210,13 @@ app.get('/auth/callback', async (req, res) => {
     if (data.error) throw new Error(data.error_description || data.error);
 
     req.session.customer_access_token = data.access_token;
+    if (req.session.forced_session_id) {
+      sessionStore.set(req.session.forced_session_id, req.session, (err) => {
+        if (err) {
+          console.error('Failed to save Shopify customer token for forced session:', err);
+        }
+      });
+    }
     res.send('Authenticated! You can now close this window.');
   } catch (err) {
     console.error('Token Exchange Error:', err);

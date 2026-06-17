@@ -43,6 +43,35 @@ function Field({
 
 const inputClass = 'block w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm outline-none transition focus:border-gray-500 focus:ring-1 focus:ring-gray-500 disabled:bg-gray-50 disabled:text-gray-500';
 
+function Switch({
+  checked,
+  onChange,
+  label,
+  description,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-md border border-gray-200 bg-white px-3 py-3">
+      <div>
+        <p className="text-sm font-semibold text-gray-900">{label}</p>
+        <p className="mt-1 text-xs leading-5 text-gray-500">{description}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onChange}
+        className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${checked ? 'bg-gray-950' : 'bg-gray-200'}`}
+        aria-pressed={checked}
+      >
+        <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+      </button>
+    </div>
+  );
+}
+
 export default function AgentConfigForm({
   data,
   onChange,
@@ -52,6 +81,10 @@ export default function AgentConfigForm({
 }: AgentStudioFormProps) {
   const modelOptions = getAzureDeploymentOptions(deployments, data.model);
   const isEcommerce = data.agent_template === 'ecommerce' || data.agent_template === 'ecommerce_sales';
+  const showShopifySetup = isEcommerce || data.data_source === 'shopify' || data.selected_tool_ids?.includes('shopify');
+  const cleanShopDomain = data.shopify_shop_url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const storefrontMcpEndpoint = cleanShopDomain ? `https://${cleanShopDomain}/api/mcp` : 'https://your-store.myshopify.com/api/mcp';
+  const ucpMcpEndpoint = cleanShopDomain ? `https://${cleanShopDomain}/api/ucp/mcp` : 'https://your-store.myshopify.com/api/ucp/mcp';
 
   return (
     <div className="space-y-5">
@@ -210,25 +243,135 @@ export default function AgentConfigForm({
         </div>
       </div>
 
-      {isEcommerce && (
+      {showShopifySetup && (
         <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
-          <h3 className="text-sm font-semibold text-gray-900">Ecommerce Source</h3>
-          <p className="mt-1 text-xs text-gray-500">Optional store configuration for ecommerce-specific agents.</p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Shopify Commerce Layer</h3>
+              <p className="mt-1 text-xs leading-5 text-gray-500">
+                Configure this agent for a specific store using Shopify Storefront MCP and UCP. Admin catalog sync is optional cache support.
+              </p>
+            </div>
+            <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${data.data_source === 'shopify' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-200 text-gray-700'}`}>
+              {data.data_source === 'shopify' ? 'Active' : 'Off'}
+            </span>
+          </div>
+
+          <div className="mt-3">
+            <Switch
+              checked={data.data_source === 'shopify'}
+              onChange={() => onChange('data_source', data.data_source === 'shopify' ? 'none' : 'shopify')}
+              label="Use Shopify MCP / UCP"
+              description="Turns on the commerce-layer path: Agent -> MCP/UCP -> Shopify -> Store."
+            />
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className={`rounded-md border px-3 py-3 ${data.shopify_integration_mode === 'storefront_ucp_mcp' ? 'border-gray-950 bg-white' : 'border-gray-200 bg-white'}`}>
+              <div className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  checked={data.shopify_integration_mode === 'storefront_ucp_mcp'}
+                  onChange={() => {
+                    onChange('shopify_integration_mode', 'storefront_ucp_mcp');
+                    onChange('shopify_mcp_enabled', true);
+                    onChange('data_source', 'shopify');
+                  }}
+                  className="mt-1"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">Storefront MCP / UCP</p>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">Preferred for single-store agents. Uses Shopify's agent-ready commerce endpoints.</p>
+                </div>
+              </div>
+            </label>
+            <label className={`rounded-md border px-3 py-3 ${data.shopify_integration_mode === 'admin_catalog_sync' ? 'border-gray-950 bg-white' : 'border-gray-200 bg-white'}`}>
+              <div className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  checked={data.shopify_integration_mode === 'admin_catalog_sync'}
+                  onChange={() => {
+                    onChange('shopify_integration_mode', 'admin_catalog_sync');
+                    onChange('shopify_mcp_enabled', false);
+                    onChange('data_source', 'shopify');
+                  }}
+                  className="mt-1"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">Cached catalog boost</p>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">Optional cache layer. For current Shopify apps, this should use app client credentials, not legacy pasted tokens.</p>
+                </div>
+              </div>
+            </label>
+          </div>
+
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <input
               value={data.shopify_shop_url}
-              onChange={(event) => onChange('shopify_shop_url', event.target.value)}
+              onChange={(event) => {
+                onChange('shopify_shop_url', event.target.value);
+                if (event.target.value.trim() && data.data_source !== 'shopify') {
+                  onChange('data_source', 'shopify');
+                }
+              }}
               className={inputClass}
-              placeholder="Shopify shop URL"
+              placeholder="your-store.myshopify.com"
+            />
+            <input
+              value={data.shopify_agent_profile_url}
+              onChange={(event) => onChange('shopify_agent_profile_url', event.target.value)}
+              className={inputClass}
+              placeholder="UCP agent profile URL"
+            />
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <input
+              value={data.shopify_client_id}
+              onChange={(event) => onChange('shopify_client_id', event.target.value)}
+              className={inputClass}
+              placeholder="Shopify app client ID"
             />
             <input
               type="password"
-              value={data.shopify_access_token}
-              onChange={(event) => onChange('shopify_access_token', event.target.value)}
+              value={data.shopify_client_secret}
+              onChange={(event) => onChange('shopify_client_secret', event.target.value)}
               className={inputClass}
-              placeholder={data.shopify_access_token_configured ? 'Token configured' : 'Access token'}
+              placeholder={data.shopify_client_secret_configured ? 'Client secret configured' : 'Shopify app client secret'}
             />
           </div>
+
+          <div className="mt-3 rounded-md border border-gray-200 bg-white px-3 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Resolved commerce endpoints</p>
+            <div className="mt-2 space-y-1 font-mono text-xs text-gray-600">
+              <p className="truncate">Storefront MCP: {storefrontMcpEndpoint}</p>
+              <p className="truncate">UCP Catalog MCP: {ucpMcpEndpoint}</p>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-gray-500">
+              Storefront MCP can browse products, carts, checkout, and policies for this store. Customer/account actions use the app client credentials during OAuth.
+            </p>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <Switch
+              checked={data.shopify_sync_enabled}
+              onChange={() => onChange('shopify_sync_enabled', !data.shopify_sync_enabled)}
+              label="Use cached catalog boost"
+              description="Optional secondary retrieval cache. Full OAuth-based sync can be wired after app credential exchange is implemented."
+            />
+            <Switch
+              checked={data.shopify_mcp_enabled}
+              onChange={() => onChange('shopify_mcp_enabled', !data.shopify_mcp_enabled)}
+              label="Enable live actions"
+              description="Expose Shopify MCP tools when customer/session auth is available. Catalog answers still work without this."
+            />
+          </div>
+
+          {data.data_source === 'shopify' && !data.shopify_shop_url && (
+            <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+              Shopify is active but setup is incomplete. Add the store domain so NOVA can resolve the Storefront MCP and UCP endpoints.
+            </p>
+          )}
         </div>
       )}
 

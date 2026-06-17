@@ -30,6 +30,7 @@ class McpTool(BaseTool):
         """Execute the remote MCP tool via JSON-RPC."""
         if kwargs is None:
             kwargs = {}
+        kwargs = self._normalize_arguments(kwargs)
 
         payload = {
             "jsonrpc": "2.0",
@@ -83,7 +84,7 @@ class McpTool(BaseTool):
                 # Use parsed_json or result dict as the data source
                 data_source = parsed_json if parsed_json is not None else result
                 
-                # ── Extract Products (search_shop_catalog, get_product_details) ──
+                # ── Extract Products (search_catalog/search_shop_catalog/get_product_details) ──
                 raw_products = []
                 if isinstance(data_source, dict):
                     if "products" in data_source:
@@ -118,8 +119,20 @@ class McpTool(BaseTool):
                     
                     # Price: from variants.price or top-level
                     price = rp.get("price", 0)
+                    currency = rp.get("currency") or rp.get("currencyCode") or "INR"
+                    price_range = rp.get("price_range")
+                    if not price and isinstance(price_range, dict):
+                        min_price = price_range.get("min") or {}
+                        if isinstance(min_price, dict):
+                            price = min_price.get("amount", 0)
+                            currency = min_price.get("currency") or currency
                     if not price and variants_list:
-                        price = variants_list[0].get("price", 0)
+                        variant_price = variants_list[0].get("price", 0)
+                        if isinstance(variant_price, dict):
+                            price = variant_price.get("amount", 0)
+                            currency = variant_price.get("currency") or currency
+                        else:
+                            price = variant_price
                     
                     # Variant ID for cart operations
                     variant_id = None
@@ -131,6 +144,8 @@ class McpTool(BaseTool):
                     if not img:
                         if isinstance(rp.get("images"), list) and rp["images"]:
                             img = rp["images"][0].get("src")
+                        elif isinstance(rp.get("media"), list) and rp["media"]:
+                            img = rp["media"][0].get("url")
                         elif isinstance(rp.get("featuredImage"), dict):
                             img = rp["featuredImage"].get("url")
                             
@@ -140,7 +155,7 @@ class McpTool(BaseTool):
                         "sku": sku,
                         "name": name,
                         "price": float(price) if price else 0.0,
-                        "currency": str(rp.get("currency") or rp.get("currencyCode") or "INR"),
+                        "currency": str(currency),
                         "category": str(rp.get("category") or rp.get("productType") or "General"),
                         "in_stock": bool(rp.get("in_stock") if rp.get("in_stock") is not None else True),
                         "image_url": img,
@@ -206,6 +221,27 @@ class McpTool(BaseTool):
                 error=f"Failed to execute MCP tool: {str(e)}"
             )
 
+    def _normalize_arguments(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Accept legacy/simple agent tool inputs and shape them for UCP tools."""
+        if self.name != "search_catalog":
+            return kwargs
+        if "catalog" in kwargs:
+            return kwargs
+
+        normalized: Dict[str, Any] = {}
+        catalog: Dict[str, Any] = {}
+        for key in ("query", "filters", "pagination", "context", "signals"):
+            if key in kwargs and kwargs[key] not in (None, ""):
+                catalog[key] = kwargs[key]
+        if "limit" in kwargs and "pagination" not in catalog:
+            catalog["pagination"] = {"limit": kwargs["limit"]}
+
+        for key, value in kwargs.items():
+            if key not in {"query", "filters", "pagination", "context", "signals", "limit"}:
+                normalized[key] = value
+        normalized["catalog"] = catalog
+        return normalized
+
 class McpClient:
     """Client for discovering and fetching tools from an MCP server."""
     
@@ -254,4 +290,3 @@ class McpClient:
         except Exception as e:
             logger.warning("mcp_server_unreachable", endpoint=self.endpoint, error=str(e))
             return []
-

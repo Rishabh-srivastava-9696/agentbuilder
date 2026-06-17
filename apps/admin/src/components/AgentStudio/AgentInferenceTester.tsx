@@ -24,6 +24,27 @@ interface Citation {
   snippet?: string;
 }
 
+interface ProductResult {
+  id?: string;
+  variant_id?: string;
+  sku?: string;
+  name?: string;
+  title?: string;
+  price?: number;
+  currency?: string;
+  product_url?: string;
+  url?: string;
+  image_url?: string;
+}
+
+interface DealerResult {
+  id?: string;
+  name?: string;
+  city?: string;
+  state?: string;
+  phone?: string;
+}
+
 interface TraceEntry {
   label: string;
   detail: string;
@@ -55,6 +76,34 @@ function compactTrace(entries: TraceEntry[]): TraceEntry[] {
   return Array.from(seen.values()).slice(-8);
 }
 
+function formatProductPrice(price?: number, currency?: string): string | null {
+  if (typeof price !== 'number' || price <= 0) return null;
+
+  // Catalog and Shopify results store monetary values in the smallest currency
+  // unit so exports stay integer-safe across providers.
+  const displayPrice = price / 100;
+  if (!currency) {
+    return displayPrice.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(displayPrice);
+  } catch {
+    return `${currency} ${displayPrice.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+}
+
 export default function AgentInferenceTester({
   agentId,
   agentName,
@@ -71,6 +120,8 @@ export default function AgentInferenceTester({
   const [citations, setCitations] = useState<Citation[]>([]);
   const [contextUsed, setContextUsed] = useState<number | null>(null);
   const [confidence, setConfidence] = useState<number | null>(null);
+  const [products, setProducts] = useState<ProductResult[]>([]);
+  const [dealers, setDealers] = useState<DealerResult[]>([]);
   const [trace, setTrace] = useState<TraceEntry[]>([
     { label: 'Runtime', detail: 'Waiting for a test question', state: 'waiting' },
   ]);
@@ -88,6 +139,8 @@ export default function AgentInferenceTester({
     setLatencyMs(null);
     setLoading(false);
     setCitations([]);
+    setProducts([]);
+    setDealers([]);
     setContextUsed(null);
     setConfidence(null);
     setTrace([{ label: 'Runtime', detail: 'Waiting for a test question', state: 'waiting' }]);
@@ -109,6 +162,8 @@ export default function AgentInferenceTester({
     setError('');
     setLatencyMs(null);
     setCitations([]);
+    setProducts([]);
+    setDealers([]);
     setContextUsed(null);
     setConfidence(null);
     setTrace([{ label: 'Runtime', detail: 'Waiting for a test question', state: 'waiting' }]);
@@ -124,6 +179,8 @@ export default function AgentInferenceTester({
     setAnswer('');
     setSubmittedMessage(prompt);
     setCitations([]);
+    setProducts([]);
+    setDealers([]);
     setContextUsed(null);
     setConfidence(null);
     setTrace([
@@ -191,8 +248,16 @@ export default function AgentInferenceTester({
           } else if (payload.type === 'tool_start') {
             addTrace({ label: 'Tool', detail: payload.content || payload.metadata?.tool_name || 'Running tool', state: 'active' });
           } else if (payload.type === 'tool_result') {
-            const sourceName = payload.metadata?.metadata?.source_name;
-            addTrace({ label: 'Tool', detail: sourceName ? `${sourceName} returned context` : (payload.content || 'Tool complete'), state: payload.metadata?.success === false ? 'error' : 'done' });
+            const toolName = payload.metadata?.tool_name;
+            const productCount = Array.isArray(payload.products) ? payload.products.length : 0;
+            const dealerCount = Array.isArray(payload.dealers) ? payload.dealers.length : 0;
+            const detail = payload.content
+              || [
+                toolName ? `${toolName} complete` : 'Tool complete',
+                productCount ? `${productCount} product${productCount === 1 ? '' : 's'}` : '',
+                dealerCount ? `${dealerCount} dealer${dealerCount === 1 ? '' : 's'}` : '',
+              ].filter(Boolean).join(' · ');
+            addTrace({ label: 'Tool', detail, state: payload.metadata?.success === false ? 'error' : 'done' });
           } else if (payload.type === 'tool_error') {
             addTrace({ label: 'Tool', detail: payload.content || 'Tool failed', state: 'error' });
           } else if (payload.type === 'done') {
@@ -215,9 +280,11 @@ export default function AgentInferenceTester({
             setConfidence(payload.confidence_score);
           }
           if (Array.isArray(payload.products) && payload.products.length) {
+            setProducts(payload.products);
             addTrace({ label: 'Tool data', detail: `${payload.products.length} product result${payload.products.length === 1 ? '' : 's'} returned`, state: 'done' });
           }
           if (Array.isArray(payload.dealers) && payload.dealers.length) {
+            setDealers(payload.dealers);
             addTrace({ label: 'Tool data', detail: `${payload.dealers.length} dealer result${payload.dealers.length === 1 ? '' : 's'} returned`, state: 'done' });
           }
         });
@@ -280,11 +347,39 @@ export default function AgentInferenceTester({
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">What Nova Used</p>
             <div className="mt-3 space-y-2">
-              {citations.length === 0 ? (
+              {products.length === 0 && dealers.length === 0 && citations.length === 0 && trace.filter(entry => entry.state !== 'waiting').length === 0 ? (
                 <div className="rounded-md border border-dashed border-gray-300 bg-white px-3 py-5 text-xs leading-5 text-gray-500">
                   Citations, retrieved files, API results, and skill outputs will appear here during a run.
                 </div>
-              ) : citations.map((citation, index) => (
+              ) : null}
+
+              {products.slice(0, 5).map((product, index) => {
+                const productName = product.name || product.title || product.sku || `Product ${index + 1}`;
+                const price = formatProductPrice(product.price, product.currency);
+                const url = product.product_url || product.url;
+                return (
+                  <div key={`${product.id || product.variant_id || product.sku || productName}-${index}`} className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <p className="line-clamp-2 text-xs font-semibold text-emerald-800">{productName}</p>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium text-emerald-700">{price || 'Catalog product'}</p>
+                      {url && (
+                        <a href={url} target="_blank" rel="noreferrer" className="text-[11px] font-medium text-emerald-700 underline">
+                          View
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {dealers.slice(0, 4).map((dealer, index) => (
+                <div key={`${dealer.id || dealer.name || index}`} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+                  <p className="truncate text-xs font-semibold text-blue-800">{dealer.name || `Dealer ${index + 1}`}</p>
+                  <p className="mt-1 text-[11px] text-blue-700">{[dealer.city, dealer.state, dealer.phone].filter(Boolean).join(' · ') || 'Dealer result'}</p>
+                </div>
+              ))}
+
+              {citations.map((citation, index) => (
                 <div key={`${citation.doc_id || citation.title || index}`} className="rounded-md border border-primary-200 bg-primary-50 px-3 py-2">
                   <p className="truncate text-xs font-semibold text-primary-700">
                     {citation.title || citation.doc_id || `Context ${index + 1}`}
@@ -293,6 +388,13 @@ export default function AgentInferenceTester({
                   {typeof citation.confidence === 'number' && (
                     <p className="mt-2 text-[11px] font-medium text-primary-600">{Math.round(citation.confidence * 100)}% confidence</p>
                   )}
+                </div>
+              ))}
+
+              {trace.filter(entry => entry.state !== 'waiting').slice(-4).map((entry, index) => (
+                <div key={`${entry.label}-${entry.detail}-${index}`} className="rounded-md border border-gray-200 bg-white px-3 py-2">
+                  <p className="text-xs font-semibold text-gray-800">{entry.label}</p>
+                  <p className="mt-1 line-clamp-3 text-[11px] leading-5 text-gray-500">{entry.detail}</p>
                 </div>
               ))}
             </div>
