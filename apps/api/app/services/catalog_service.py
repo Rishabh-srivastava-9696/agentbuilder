@@ -256,7 +256,7 @@ async def fetch_shopify_products(
                     if "/password" in location:
                         raise ValueError(
                             "The Shopify store is password-protected. Please go to 'Settings' in your Shopify Admin, "
-                            "create a Custom App, and enter the 'Admin API Access Token' (shpat_...) to allow access."
+                            "configure Shopify app credentials for the agent MCP/UCP path, or use a public storefront cache import."
                         )
                     
                     # Follow other redirects (domain changes, etc) once

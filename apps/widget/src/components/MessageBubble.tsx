@@ -38,6 +38,16 @@ const md = new MarkdownIt({
   breaks: true        // Convert \n to <br>
 });
 
+const defaultLinkOpenRenderer = md.renderer.rules.link_open || ((tokens, idx, options, _env, self) => {
+  return self.renderToken(tokens, idx, options);
+});
+
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('target', '_blank');
+  tokens[idx].attrSet('rel', 'noopener noreferrer');
+  return defaultLinkOpenRenderer(tokens, idx, options, env, self);
+};
+
 // Parse <product_info> tags and extract product SKUs
 const parseProductInfo = (content: string): { cleanContent: string; productSkus: string[] } => {
   const productSkus: string[] = [];
@@ -71,6 +81,32 @@ const getUrlHost = (url?: string): string => {
     return new URL(url).hostname;
   } catch {
     return '';
+  }
+};
+
+const formatProductPrice = (price?: number, currency?: string): string => {
+  if (price === undefined) return '';
+
+  const displayPrice = price / 100;
+  if (!currency) {
+    return displayPrice.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(displayPrice);
+  } catch {
+    return `${currency} ${displayPrice.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
   }
 };
 
@@ -280,7 +316,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                       {relatedProduct && relatedProduct.category && (
                         <p className="citation-snippet">
                           Category: {relatedProduct.category}
-                          {relatedProduct.price && ` • ${relatedProduct.currency === 'INR' ? '₹' : '$'}${relatedProduct.price.toLocaleString()}`}
+                          {relatedProduct.price && ` • ${formatProductPrice(relatedProduct.price, relatedProduct.currency)}`}
                         </p>
                       )}
                     </div>

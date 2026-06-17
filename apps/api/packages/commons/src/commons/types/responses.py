@@ -32,6 +32,7 @@ class StreamingMessageResponse(BaseModel):
     type: str = Field(..., description="Type of chunk: 'status', 'content', 'metadata', 'error'")
     content: str = ""
     conversation_id: str
+    metadata: Optional[Dict[str, Any]] = None
     citations: List[Citation] = []
     context_used: Optional[int] = None
     confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)

@@ -23,6 +23,7 @@ export async function discoverMcpEndpoints(shopUrl) {
     const config = await response.json();
     const endpoints = {
       storefrontMcp: `https://${cleanUrl}/api/mcp`,
+      ucpCatalogMcp: `https://${cleanUrl}/api/ucp/mcp`,
       customerAccountMcp: config.mcp_api || `https://${cleanUrl}/customer/api/mcp`,
       auth: {
         authorization_endpoint: config.authorization_endpoint,
@@ -38,6 +39,7 @@ export async function discoverMcpEndpoints(shopUrl) {
     // Fallback to standard patterns if discovery fails
     return {
       storefrontMcp: `https://${cleanUrl}/api/mcp`,
+      ucpCatalogMcp: `https://${cleanUrl}/api/ucp/mcp`,
       customerAccountMcp: `https://${cleanUrl}/customer/api/mcp`,
       auth: null
     };

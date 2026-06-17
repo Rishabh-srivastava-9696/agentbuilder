@@ -43,6 +43,9 @@ export default function AgentManagePanel({ data, agentId, agentStatus = 'active'
   const selectedTools = data.selected_tool_ids?.length || 0;
   const knowledgeState = data.data_source === 'rag' || data.rag_enabled ? 'Enabled' : 'Off';
   const apiState = data.api_data_source_enabled ? 'Configured' : 'Off';
+  const shopifyState = data.data_source === 'shopify'
+    ? (data.shopify_shop_url ? (data.shopify_mcp_enabled ? 'MCP / UCP ready' : 'Configured') : 'Needs setup')
+    : 'Off';
   const memoryState = data.conversation_memory ? 'Short-term on' : 'Off';
   const widgetReady = agentStatus === 'active' && data.widget_enabled;
   const widgetUrl = buildWidgetUrl(agentId);
@@ -65,6 +68,7 @@ export default function AgentManagePanel({ data, agentId, agentStatus = 'active'
         </div>
         <div className="px-4">
           <SummaryRow icon={<CircleStackIcon className="h-4 w-4" />} label="Knowledge" value={knowledgeState} />
+          <SummaryRow icon={<CircleStackIcon className="h-4 w-4" />} label="Shopify" value={shopifyState} />
           <SummaryRow icon={<PuzzlePieceIcon className="h-4 w-4" />} label="Skills" value={`${selectedSkills} selected`} />
           <SummaryRow icon={<CommandLineIcon className="h-4 w-4" />} label="Tools / APIs" value={apiState !== 'Off' ? apiState : `${selectedTools} selected`} />
           <SummaryRow icon={<ShieldCheckIcon className="h-4 w-4" />} label="Memory" value={memoryState} />
@@ -130,6 +134,12 @@ export default function AgentManagePanel({ data, agentId, agentStatus = 'active'
         ) : agentStatus !== 'active' && (
           <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
             This saved agent is {agentStatus}. Activate it from the Agents page before opening the public widget.
+          </p>
+        )}
+
+        {data.data_source === 'shopify' && !data.shopify_shop_url && (
+          <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+            Shopify is selected, but the store domain is missing. Add the store domain in Shopify Commerce Layer before testing ecommerce answers.
           </p>
         )}
       </section>

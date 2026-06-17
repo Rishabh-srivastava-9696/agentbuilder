@@ -40,8 +40,13 @@ export interface AgentStudioData {
   session_timeout: number;
   max_conversation_length: number;
   shopify_shop_url: string;
-  shopify_access_token: string;
-  shopify_access_token_configured: boolean;
+  shopify_client_id: string;
+  shopify_client_secret: string;
+  shopify_client_secret_configured: boolean;
+  shopify_sync_enabled: boolean;
+  shopify_mcp_enabled: boolean;
+  shopify_integration_mode: 'storefront_ucp_mcp' | 'admin_catalog_sync';
+  shopify_agent_profile_url: string;
   api_data_source_enabled: boolean;
   api_data_source_name: string;
   api_data_source_url: string;

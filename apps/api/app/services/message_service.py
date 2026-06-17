@@ -174,22 +174,22 @@ def _deduplicate_entities(entities: list[dict], *identity_keys: str) -> list[dic
 class MessageService:
     """
     Service for processing chat messages with Phase 5 Memory System.
-    
+
     Integrates:
     - Short-term memory (conversation history + auto-summary)
     - Episodic memory (user facts + PII vaulting)
     - Semantic memory (KB retrieval)
     - Graph memory (rules + escalations)
     """
-    
+
     def __init__(self, settings: Settings, brand_id: Optional[str] = None, agent_id: Optional[str] = None):
         self.settings = settings
         self.brand_id = brand_id or "default-brand"
         self.agent_id = agent_id
-        
+
         # Database will be set dynamically based on agent/brand
         self.brand_db: Optional[AsyncIOMotorDatabase] = None
-        
+
         # Agent configuration (will be loaded on first message)
         self.agent_config = None
         self.agent_record: dict = {}
@@ -200,7 +200,7 @@ class MessageService:
         self.capability_firewall = CapabilityFirewall()
         self.skill_registry = BuiltInSkillRegistry()
         self.external_tool_registry = ToolRegistryService()
-        
+
         # Memory system will be initialized after database is set
         self.memory_config = MemoryConfig()
         self.short_term: Optional[ShortTermMemory] = None
@@ -209,7 +209,7 @@ class MessageService:
         self.procedural: Optional[ProceduralMemory] = None
         self.resource: Optional[ResourceMemory] = None
         self._memory_initialized = False
-        
+
         logger.info(
             "memory_system_initialized",
             brand_id=self.brand_id,
@@ -218,7 +218,7 @@ class MessageService:
             fact_extraction=self.memory_config.ENABLE_FACT_EXTRACTION,
             graph_rules=self.memory_config.ENABLE_GRAPH_RULES,
         )
-        
+
         # Initialize retrieval pipeline configuration.
         self.retrieval_config = RetrievalConfig(
             vector_enabled=True,
@@ -235,10 +235,10 @@ class MessageService:
         )
         self.retrieval_pipeline = None
         self.llm_provider = None
-        
+
         # Phase 4: Initialize response validator
         self.response_validator = ResponseValidator(strict_mode=True)
-        
+
         # Phase 6: Initialize SOTA Orchestrator with Critic
         self.tool_registry = ToolRegistry()
         self.orchestrator = None
@@ -593,35 +593,35 @@ class MessageService:
             "skills": registered_skills,
             "tools": registered_tools,
         }
-    
+
     async def _initialize_brand_database(self, agent_id: str):
         """Initialize brand-specific database and memory system."""
         try:
             # Get brand database from connection manager
             # Use get_brand_db_by_agent_id which handles the lookup
             self.brand_db = await connection_manager.get_brand_db_by_agent_id(agent_id)
-            
+
             # Get the brand_slug from the agent
             system_db = connection_manager.get_system_db()
             agent = await system_db.agents.find_one({"id": agent_id})
             if agent and agent.get("brand_slug"):
                 brand_slug = agent["brand_slug"]
-                
+
                 await self._configure_retrieval_pipeline(brand_slug)
                 logger.info("retrieval_pipeline_reinitialized", brand_slug=brand_slug)
-            
+
             # Initialize memory system with brand database
             self.short_term = ShortTermMemory(self.brand_db)
             self.episodic = EpisodicMemory(self.brand_db)
             self.graph = GraphMemory(self.brand_db)
             self.procedural = ProceduralMemory(self.brand_db)
             self.resource = ResourceMemory(self.brand_db)
-            
-            logger.info("brand_database_initialized", 
-                       agent_id=agent_id, 
+
+            logger.info("brand_database_initialized",
+                       agent_id=agent_id,
                        brand_id=self.brand_id,
                        memory_layers=["short_term", "episodic", "graph", "procedural", "resource"])
-            
+
         except Exception as e:
             logger.error("brand_database_init_failed", agent_id=agent_id, error=str(e), exc_info=True)
             raise
@@ -631,36 +631,36 @@ class MessageService:
         if not self._memory_initialized:
             if self.brand_db is None or self.short_term is None:
                 raise RuntimeError("Brand database not initialized. Call _initialize_brand_database first.")
-            
+
             await self.short_term._ensure_indexes()
             await self.episodic._ensure_indexes()
             await self.graph._ensure_indexes()
-            
+
             # Initialize new memory layers
             if self.procedural:
                 await self.procedural._ensure_indexes()
             if self.resource:
                 await self.resource._ensure_indexes()
-            
+
             # Seed default escalations if method exists (legacy support)
             if hasattr(self.graph, 'seed_default_escalations'):
                 await self.graph.seed_default_escalations()
-            
+
             self._memory_initialized = True
             logger.info("memory_indexes_initialized", layers=["short_term", "episodic", "graph", "procedural", "resource"])
-    
+
     async def _load_agent_config(self, agent_id: str):
         """Load agent configuration from system database."""
         try:
             self.agent_id = agent_id
             # Initialize brand database first
             await self._initialize_brand_database(agent_id)
-            
+
             # Load from system agents collection
             system_db = connection_manager.get_system_db()
             agents_collection = system_db["agents"]
             agent = await agents_collection.find_one({"id": agent_id})
-            
+
             if agent:
                 self.agent_record = agent
                 config = decrypt_full_agent_configuration_for_runtime(
@@ -690,79 +690,95 @@ class MessageService:
                 )
                 capability_context = self._register_configured_capabilities(config)
                 self.prompt_metadata["capabilities"] = capability_context
-                
+
                 # Sync system prompt to Orchestrator
                 if self.orchestrator:
                     self.orchestrator.system_prompt = self.system_prompt
-                
-                logger.info("agent_config_loaded", 
-                           agent_id=agent_id, 
+
+                logger.info("agent_config_loaded",
+                           agent_id=agent_id,
                            brand_id=self.brand_id,
                            has_system_prompt=bool(self.system_prompt),
                            prompt_version=self.prompt_metadata.get("prompt_version"),
                            prompt_hash=self.prompt_metadata.get("cacheable_prefix_hash"))
-                           
-                # Initialize remote MCP tools if Shopify is selected
+
+                # Initialize remote MCP tools only when live Shopify actions are enabled.
+                # Catalog-backed ecommerce answers can run without MCP/customer auth.
                 if config.get("data_source") == "shopify":
                     from tools.mcp_client import McpClient
                     from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
-                    
+
                     # For local development we assume port 3005 for the Shopify MCP Service
                     # In production this would be loaded from settings
                     mcp_endpoint = self.settings.SHOPIFY_MCP_URL if hasattr(self.settings, 'SHOPIFY_MCP_URL') else "http://localhost:3005/mcp"
-                    
+
                     # Extract per-agent Shopify credentials from dashboard-managed config.
                     # Store identity and tokens must not fall back to global env values in production.
                     shopify_conf = config.get("shopify", {})
+                    shopify_mcp_enabled = bool(shopify_conf.get("mcp_enabled"))
                     shopify_url = (
-                        shopify_conf.get("shop_url") or 
+                        shopify_conf.get("shop_url") or
                         config.get("shopify_shop_url")
                     )
-                    shopify_token = (
-                        shopify_conf.get("access_token") or
-                        config.get("shopify_access_token") or 
-                        config.get("shopify_admin_token")
+                    shopify_client_id = shopify_conf.get("client_id") or config.get("shopify_client_id")
+                    shopify_client_secret = (
+                        shopify_conf.get("client_secret") or
+                        config.get("shopify_client_secret")
                     )
 
-                    if not shopify_url or not shopify_token:
+                    if not shopify_url:
                         logger.warning(
                             "shopify_credentials_missing",
                             agent_id=agent_id,
                             has_shop_url=bool(shopify_url),
-                            has_access_token=bool(shopify_token),
                         )
-                        
-                    mcp_headers = {
-                        "x-shopify-shop-url": str(shopify_url or ""),
-                        "x-shopify-admin-token": str(shopify_token or "")
-                    }
-                    
-                    # Also try to get a customer access token from config or settings
-                    customer_token = (
-                        shopify_conf.get("customer_access_token") or
-                        config.get("shopify_customer_access_token")
-                    )
-                    
-                    if customer_token:
-                        mcp_headers["x-customer-access-token"] = str(customer_token)
-                    
-                    mcp_client = McpClient(endpoint=mcp_endpoint, headers=mcp_headers)
-                    
-                    # Connect and discover remote tools using the conversation/user session
-                    remote_tools = await mcp_client.discover_tools()
-                    for tool in remote_tools:
-                        self.tool_registry.register(tool)
-                        
-                    logger.info("mcp_tools_registered", count=len(remote_tools), brand_id=self.brand_id)
 
-                    # Swap to ShopifyOrchestrator for Shopify-integrated agents
-                    self.orchestrator = ShopifyOrchestrator(
-                        llm=self.llm_provider,
-                        tools=self.tool_registry,
-                        critic=self.response_validator,
-                        system_prompt=self.system_prompt
-                    )
-                    logger.info("switched_to_shopify_orchestrator", agent_id=agent_id)
+                    if shopify_mcp_enabled and shopify_url:
+                        mcp_headers = {
+                            "x-shopify-shop-url": str(shopify_url or ""),
+                            "x-session-id": f"agent:{agent_id}",
+                        }
+                        if shopify_client_id:
+                            mcp_headers["x-shopify-client-id"] = str(shopify_client_id)
+                        if shopify_client_secret:
+                            mcp_headers["x-shopify-client-secret"] = str(shopify_client_secret)
+                        if shopify_conf.get("agent_profile_url"):
+                            mcp_headers["x-shopify-ucp-agent-profile"] = str(shopify_conf.get("agent_profile_url"))
+
+                        # Also try to get a customer access token from config or settings
+                        customer_token = (
+                            shopify_conf.get("customer_access_token") or
+                            config.get("shopify_customer_access_token")
+                        )
+
+                        if customer_token:
+                            mcp_headers["x-customer-access-token"] = str(customer_token)
+
+                        mcp_client = McpClient(endpoint=mcp_endpoint, headers=mcp_headers)
+
+                        # Connect and discover remote tools using a stable agent session.
+                        remote_tools = await mcp_client.discover_tools(session_id=f"agent:{agent_id}")
+                        for tool in remote_tools:
+                            self.tool_registry.register(tool)
+
+                        logger.info("mcp_tools_registered", count=len(remote_tools), brand_id=self.brand_id)
+
+                        # Swap to ShopifyOrchestrator for live Shopify MCP actions.
+                        self.orchestrator = ShopifyOrchestrator(
+                            llm=self.llm_provider,
+                            tools=self.tool_registry,
+                            critic=self.response_validator,
+                            system_prompt=self.system_prompt
+                        )
+                        logger.info("switched_to_shopify_orchestrator", agent_id=agent_id)
+                    else:
+                        logger.info(
+                            "shopify_mcp_skipped",
+                            agent_id=agent_id,
+                            mcp_enabled=shopify_mcp_enabled,
+                            has_shop_url=bool(shopify_url),
+                            has_client_id=bool(shopify_client_id),
+                        )
             else:
                 logger.warning("agent_not_found", agent_id=agent_id)
                 self.agent_record = {}
@@ -772,7 +788,7 @@ class MessageService:
                 await self._configure_runtime_dependencies(
                     brand_slug=self.brand_id,
                 )
-                
+
         except Exception as e:
             logger.error("agent_config_load_error", error=str(e))
             self.agent_record = {}
@@ -813,11 +829,11 @@ class MessageService:
         if knowledge_tool is not None and hasattr(knowledge_tool, "page_context"):
             setattr(knowledge_tool, "page_context", self._normalized_request_page_context(request))
 
-    
+
     async def process_message(self, request: MessageRequest) -> MessageResponse:
         """
         Process a single message with Phase 5 Memory System.
-        
+
         Flow:
         1. Load agent configuration
         2. Ensure memory initialized
@@ -832,28 +848,28 @@ class MessageService:
         """
         try:
             start_time = datetime.now(timezone.utc)
-            
+
             # Load agent configuration from request
             agent_id = request.agent_id or self.brand_id
             await self._load_agent_config(agent_id)
-            
+
             # Ensure memory is initialized
             await self._ensure_memory_initialized()
             short_term_enabled = self._short_term_memory_enabled()
             long_term_enabled = self._long_term_memory_enabled()
-            
+
             # Generate conversation ID if not provided
             conversation_id = request.conversation_id or str(uuid.uuid4())
             user_id = request.user_id or "anonymous"
             self._bind_request_page_context_to_retrieval(request)
-            
+
             logger.info(
                 "message_processing_start",
                 conversation_id=conversation_id,
                 user_id=user_id,
                 brand_id=self.brand_id,
             )
-            
+
             escalations = []
             if self.memory_config.ENABLE_GRAPH_RULES and self.graph:
                 escalations = await self.graph.check_escalation(request.message)
@@ -894,7 +910,7 @@ class MessageService:
                 query=runtime_message,
                 escalations=escalations,
             )
-            
+
             # Retrieve recent history for context (last 6 messages)
             recent_messages = []
             if short_term_enabled:
@@ -902,7 +918,7 @@ class MessageService:
                     conversation_id=conversation_id,
                     limit=6
                 )
-            
+
             # Build chat history AND extract session state (e.g. cart_id) from
             # previous assistant message metadata so the agent can reuse the cart.
             chat_history = []
@@ -931,11 +947,11 @@ class MessageService:
                 "prompt_metadata": self.prompt_metadata,
                 "capability_scope": capability_scope,
             }
-            
+
             # 4. RUN SOTA ORCHESTRATOR LOOP
             # Instead of linear retrieve->generate, let the agent plan and execute.
             from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
-            
+
             if isinstance(self.orchestrator, ShopifyOrchestrator):
                 agent_result = await self.orchestrator.run(
                     query=runtime_message,
@@ -947,7 +963,7 @@ class MessageService:
                     query=runtime_message,
                     context=context_dict
                 )
-            
+
             response_text, agent_metadata = self._apply_post_response_guardrails(
                 agent_result.answer,
                 agent_result.metadata,
@@ -962,7 +978,7 @@ class MessageService:
                 }
             # Note: Validation now happens inside Orchestrator via Critic loop
             # Check agent_result.metadata for validation_passed and validation_issues
-            
+
             # Extract cart_id from tool results for persistence across turns
             saved_cart_id = None
             for _, tool_result in agent_result.metadata.get("tool_results", {}).items():
@@ -971,7 +987,7 @@ class MessageService:
                     if cart and isinstance(cart, dict) and cart.get("cart_id"):
                         saved_cart_id = cart["cart_id"]
                         break
-            
+
             # If we have an existing cart_id from session_state and no new one was created, keep it
             if not saved_cart_id and session_state.get("cart_id"):
                 saved_cart_id = session_state["cart_id"]
@@ -1009,7 +1025,7 @@ class MessageService:
                 brand_slug=self.brand_id,
                 agent_id=agent_id,
             )
-            
+
             # 6. Extract Facts & Auto-Summary (Async)
             if short_term_enabled and long_term_enabled and self.memory_config.ENABLE_FACT_EXTRACTION:
                 messages = await self.short_term.get_recent_messages(conversation_id, limit=10)
@@ -1080,7 +1096,7 @@ class MessageService:
             )
             MESSAGE_COUNT.labels(status=status_label).inc()
             MESSAGE_DURATION.labels(mode="sync", status=status_label).observe(duration_ms / 1000)
-                
+
             # Return response
             return MessageResponse(
                 message=response_text,
@@ -1090,42 +1106,42 @@ class MessageService:
                 confidence_score=confidence_score,
                 processing_time_ms=duration_ms,
             )
-            
+
         except Exception as e:
             logger.error("message_processing_error", error=str(e), exc_info=True)
             raise
 
-    
+
     async def stream_message(self, request: MessageRequest) -> AsyncGenerator[StreamingMessageResponse, None]:
         """
         Process a message and stream the response with Phase 5 Memory System.
-        
+
         Same flow as process_message but with streaming response generation.
         """
         logger.info("stream_message_called", message=request.message[:50])
-        
+
         # Initialize conversation_id early for error handling
         conversation_id = request.conversation_id or str(uuid.uuid4())
-        
+
         try:
             start_time = datetime.now(timezone.utc)
-            
+
             # Load agent configuration from request
             agent_id = request.agent_id or self.brand_id
             await self._load_agent_config(agent_id)
             logger.info("agent_config_loaded", agent_id=agent_id, has_system_prompt=bool(self.system_prompt))
-            
+
             # Ensure memory initialized
             logger.info("ensuring_memory_initialized")
             await self._ensure_memory_initialized()
             logger.info("memory_initialized")
             short_term_enabled = self._short_term_memory_enabled()
             long_term_enabled = self._long_term_memory_enabled()
-            
+
             # Set user_id
             user_id = request.user_id or "anonymous"
             self._bind_request_page_context_to_retrieval(request)
-            
+
             yield StreamingMessageResponse(
                 type="context_start",
                 content="Loading agent configuration, memory, and runtime capabilities...",
@@ -1205,7 +1221,7 @@ class MessageService:
                     content=runtime_message,
                     metadata=user_metadata,
                 )
-            
+
             # Phase 6: Use SOTA Orchestrator for Planning, Execution, and Critic loop
             yield StreamingMessageResponse(
                 type="context_result",
@@ -1225,7 +1241,7 @@ class MessageService:
                     "memory": self._memory_runtime_metadata(),
                 },
             )
-            
+
             # Retrieve recent history for context (last 6 messages)
             recent_messages = []
             if short_term_enabled:
@@ -1233,7 +1249,7 @@ class MessageService:
                     conversation_id=conversation_id,
                     limit=6
                 )
-            
+
             # Build chat history AND extract session state (e.g. cart_id) from
             # previous assistant message metadata so the agent can reuse the cart.
             chat_history = []
@@ -1265,13 +1281,13 @@ class MessageService:
                 "prompt_metadata": self.prompt_metadata,
                 "capability_scope": capability_scope,
             }
-            
+
             from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
-            
+
             if isinstance(self.orchestrator, ShopifyOrchestrator):
                 # Define a queue to capture status updates from the orchestrator
                 status_queue = asyncio.Queue()
-                
+
                 async def on_status(text: str):
                     await status_queue.put(text)
 
@@ -1334,7 +1350,7 @@ class MessageService:
                         await asyncio.sleep(0.1)
 
                 agent_result = await orchestrator_task
-            
+
             # Extract final answer
             full_response, agent_metadata = self._apply_post_response_guardrails(
                 agent_result.answer,
@@ -1348,7 +1364,42 @@ class MessageService:
                     "guardrail_action": agent_metadata.get("guardrail_action") or guardrail_decision["action"],
                     "guardrail_reason": agent_metadata.get("guardrail_reason") or guardrail_decision["reason"],
                 }
-            
+
+            tool_results = agent_metadata.get("tool_results", {})
+            for tool_name, tool_result in tool_results.items():
+                if not hasattr(tool_result, "metadata") or not tool_result.metadata:
+                    continue
+                tool_metadata = tool_result.metadata or {}
+                products = [_sanitize_for_json(product) for product in (tool_metadata.get("products") or [])]
+                dealers = [_sanitize_for_json(dealer) for dealer in (tool_metadata.get("dealers") or [])]
+                sources = tool_metadata.get("sources") or []
+                summary_parts = []
+                if products:
+                    summary_parts.append(f"{len(products)} product result{'s' if len(products) != 1 else ''}")
+                if dealers:
+                    summary_parts.append(f"{len(dealers)} dealer result{'s' if len(dealers) != 1 else ''}")
+                if sources:
+                    summary_parts.append(f"{len(sources)} source{'s' if len(sources) != 1 else ''}")
+                if tool_metadata.get("cart"):
+                    summary_parts.append("cart context")
+                yield StreamingMessageResponse(
+                    type="tool_result",
+                    content=(
+                        f"{tool_name} returned {', '.join(summary_parts)}."
+                        if summary_parts
+                        else f"{tool_name} completed."
+                    ),
+                    conversation_id=conversation_id,
+                    metadata={
+                        "tool_name": str(tool_name),
+                        "success": getattr(tool_result, "success", True),
+                        "cart": _sanitize_for_json(tool_metadata.get("cart") or {}) if tool_metadata.get("cart") else None,
+                        "orders_count": len(tool_metadata.get("orders") or []),
+                    },
+                    products=products,
+                    dealers=dealers,
+                )
+
             # Stream the result word by word (to maintain UI experience)
             words = full_response.split(' ')
             for i, word in enumerate(words):
@@ -1361,11 +1412,11 @@ class MessageService:
                 )
                 # Small artificial delay to keep UI smooth
                 await asyncio.sleep(0.02)
-            
+
             # Phase 4: Validate streaming response
             # Orchestrator already ran the Critic loop and self-correction
             # So we just store the final answer and its metadata
-            
+
             # Extract cart_id from tool results for persistence across turns
             saved_cart_id = None
             for _, tool_result in agent_metadata.get("tool_results", {}).items():
@@ -1374,13 +1425,13 @@ class MessageService:
                     if cart and isinstance(cart, dict) and cart.get("cart_id"):
                         saved_cart_id = cart["cart_id"]
                         break
-            
+
             # If we have an existing cart_id from session_state and no new one was created, keep it
             if not saved_cart_id and session_state.get("cart_id"):
                 saved_cart_id = session_state["cart_id"]
-            
-            logger.info("cart_persistence_final_state", 
-                saved_cart_id=saved_cart_id, 
+
+            logger.info("cart_persistence_final_state",
+                saved_cart_id=saved_cart_id,
                 from_session=session_state.get("cart_id"),
                 newly_found=any("cart" in str(tr.metadata) for tr in agent_metadata.get("tool_results", {}).values() if hasattr(tr, 'metadata') and tr.metadata)
             )
@@ -1412,7 +1463,7 @@ class MessageService:
                     }
                 )
 
-            
+
             # Sync to Strapi dashboard (fire-and-forget — never blocks streaming)
             self.strapi.sync_conversation(
                 conversation_id=conversation_id,
@@ -1430,14 +1481,13 @@ class MessageService:
                     messages=messages,
                     conversation_id=conversation_id
                 )
-            
+
             # Check auto-summary
             if short_term_enabled and self.memory_config.ENABLE_AUTO_SUMMARY:
                 if await self.short_term.should_summarize(conversation_id):
                     await self.short_term.trigger_summary(conversation_id)
-            
+
             # Send final metadata (orchestrator handles retrieval internally)
-            tool_results = agent_metadata.get("tool_results", {})
             citations, safe_products, safe_dealers = _extract_tool_result_metadata(tool_results)
 
             unique_products = _deduplicate_entities(
@@ -1478,7 +1528,7 @@ class MessageService:
                     "citations_count": len(citations),
                 },
             )
-            
+
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
             status_label = "fallback" if agent_metadata.get("fallback") else "success"
             if agent_metadata.get("guardrail_action") == "fallback":
@@ -1535,7 +1585,7 @@ class MessageService:
                 conversation_id=conversation_id,
                 duration_ms=int(duration * 1000),
             )
-            
+
         except Exception as e:
             logger.error("message_streaming_error", error=str(e), exc_info=True)
             yield StreamingMessageResponse(
@@ -1543,7 +1593,7 @@ class MessageService:
                 content=f"Error: {str(e)}",
                 conversation_id=conversation_id or str(uuid.uuid4())
             )
-    
+
     async def inject_history(self, conversation_id: str, agent_id: str, messages: list) -> None:
         """Inject messages from human takeover into short-term memory so the AI
         has full context when it resumes control.
@@ -1600,7 +1650,7 @@ class MessageService:
                     sources=[],
                     query=request.message
                 )
-            
+
             # Use retrieval pipeline to get relevant chunks
             context = await self.retrieval_pipeline.retrieve(
                 query=request.message,
@@ -1610,7 +1660,7 @@ class MessageService:
                 max_chunks=self._agent_max_chunks()
             )
             return context
-            
+
         except Exception as e:
             logger.error("Error retrieving context", error=str(e), exc_info=True)
             # Return empty context on error
@@ -1622,7 +1672,7 @@ class MessageService:
                 query=request.message,
                 retrieval_metadata={"error": str(e)}
             )
-    
+
     async def _build_memory_context(
         self,
         conversation_id: str,
@@ -1632,7 +1682,7 @@ class MessageService:
     ) -> dict:
         """
         Build unified memory context from all layers.
-        
+
         Returns dict with:
         - recent_messages: Last N messages from short-term
         - user_facts: User preferences from episodic memory
@@ -1649,12 +1699,12 @@ class MessageService:
             recent_messages = await self.short_term.get_recent_messages(
                 conversation_id, limit=10
             )
-        
+
         # Get user facts from episodic memory
         user_facts = []
         if long_term_enabled and self.memory_config.ENABLE_FACT_EXTRACTION:
             user_facts = await self.episodic.get_user_facts(user_id, limit=20)
-        
+
         # Get matched graph rules
         matched_rules = []
         if self.memory_config.ENABLE_GRAPH_RULES:
@@ -1663,7 +1713,7 @@ class MessageService:
                 query=query,
                 context={},
             )
-        
+
         # Get conversation summaries
         summaries = []
         if short_term_enabled:
@@ -1674,7 +1724,7 @@ class MessageService:
                 summaries = await summaries_cursor.to_list(length=3)
             except Exception as e:
                 logger.warning("failed_to_get_summaries", error=str(e))
-        
+
         return {
             "recent_messages": recent_messages,
             "user_facts": user_facts,
@@ -1682,7 +1732,7 @@ class MessageService:
             "escalations": escalations,
             "summaries": summaries,
         }
-    
+
     async def _generate_response(
         self,
         message: str,
@@ -1699,10 +1749,10 @@ class MessageService:
                 memory_context,
                 escalations,
             )
-            
+
             # Generate response
             response = await self.llm_provider.generate(prompt)
-            
+
             # Console logging for debugging
             print("\n" + "="*80)
             print("🤖 LLM RESPONSE GENERATED")
@@ -1713,11 +1763,11 @@ class MessageService:
             print("-" * 80)
             print(response.content)
             print("-" * 80)
-            
+
             # Log retrieval context info
             chunks_count = len(retrieval_context.chunks) if hasattr(retrieval_context, 'chunks') else 0
             print(f"\nContext Used: {chunks_count} chunks")
-            
+
             # Log memory context info
             if memory_context:
                 print(f"Memory Layers:")
@@ -1729,21 +1779,21 @@ class MessageService:
                     print(f"  - Matched Rules: {len(memory_context['matched_rules'])}")
                 if memory_context.get('summaries'):
                     print(f"  - Summaries: {len(memory_context['summaries'])}")
-            
+
             # Log escalations if any
             if escalations:
                 print(f"\n⚠️  Safety Escalations: {len(escalations)}")
                 for esc in escalations[:3]:  # Show up to 3
                     print(f"  - {esc.severity.upper()}: {', '.join(esc.matched_keywords[:3])}")
-            
+
             print("="*80 + "\n")
-            
+
             return response.content
-            
+
         except Exception as e:
             logger.error("llm_generation_error", error=str(e))
             return "I apologize, but I encountered an error while processing your request."
-    
+
     async def _stream_response(
         self,
         message: str,
@@ -1760,17 +1810,17 @@ class MessageService:
                 memory_context,
                 escalations,
             )
-            
+
             # Console logging header
             print("\n" + "="*80)
             print("🤖 LLM STREAMING RESPONSE")
             print("="*80)
             print(f"User Query: {message[:100]}...")
-            
+
             # Log retrieval context info
             chunks_count = len(retrieval_context.chunks) if hasattr(retrieval_context, 'chunks') else 0
             print(f"Context Used: {chunks_count} chunks")
-            
+
             # Log memory context info
             if memory_context:
                 print(f"Memory Layers:")
@@ -1780,29 +1830,29 @@ class MessageService:
                     print(f"  - User Facts: {len(memory_context['user_facts'])}")
                 if memory_context.get('matched_rules'):
                     print(f"  - Matched Rules: {len(memory_context['matched_rules'])}")
-            
+
             # Log escalations if any
             if escalations:
                 print(f"\n⚠️  Safety Escalations: {len(escalations)}")
                 for esc in escalations[:3]:
                     print(f"  - {esc.severity.upper()}: {', '.join(esc.matched_keywords[:3])}")
-            
+
             print(f"\nStreaming Response:")
             print("-" * 80)
-            
+
             # Stream response and collect for final display
             full_response = []
             async for chunk in self.llm_provider.stream(prompt):
                 full_response.append(chunk.content)
                 yield chunk.content
-            
+
             # Log complete response
             complete_response = ''.join(full_response)
             print(complete_response)
             print("-" * 80)
             print(f"Total Length: {len(complete_response)} chars")
             print("="*80 + "\n")
-                
+
         except Exception as e:
             logger.error("llm_streaming_error", error=str(e))
             yield "I apologize, but I encountered an error while processing your request."

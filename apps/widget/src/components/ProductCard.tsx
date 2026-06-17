@@ -11,13 +11,28 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
 
   const formatPrice = (price?: number, currency?: string) => {
     if (price === undefined) return 'Price on request';
-    
-    const currencySymbol = currency === 'INR' ? '₹' : 
-                          currency === 'USD' ? '$' : 
-                          currency === 'EUR' ? '€' : 
-                          currency || '₹';
-    
-    return `${currencySymbol}${price.toLocaleString()}`;
+
+    const displayPrice = price / 100;
+    if (!currency) {
+      return displayPrice.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    }
+
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(displayPrice);
+    } catch {
+      return `${currency} ${displayPrice.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    }
   };
 
   const handleImageError = () => {

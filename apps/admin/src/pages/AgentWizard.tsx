@@ -170,8 +170,13 @@ interface AgentData {
   // Data Source
   data_source: 'rag' | 'shopify' | 'none';
   shopify_shop_url: string;
-  shopify_access_token: string;
-  shopify_access_token_configured: boolean;
+  shopify_client_id: string;
+  shopify_client_secret: string;
+  shopify_client_secret_configured: boolean;
+  shopify_sync_enabled: boolean;
+  shopify_mcp_enabled: boolean;
+  shopify_integration_mode: 'storefront_ucp_mcp' | 'admin_catalog_sync';
+  shopify_agent_profile_url: string;
   api_data_source_enabled: boolean;
   api_data_source_name: string;
   api_data_source_url: string;
@@ -270,8 +275,13 @@ const initialData: AgentData = {
   // Data Source
   data_source: 'none',
   shopify_shop_url: '',
-  shopify_access_token: '',
-  shopify_access_token_configured: false,
+  shopify_client_id: '',
+  shopify_client_secret: '',
+  shopify_client_secret_configured: false,
+  shopify_sync_enabled: true,
+  shopify_mcp_enabled: false,
+  shopify_integration_mode: 'storefront_ucp_mcp',
+  shopify_agent_profile_url: '',
   api_data_source_enabled: false,
   api_data_source_name: '',
   api_data_source_url: '',
@@ -479,8 +489,13 @@ export default function AgentWizard() {
         // Data Source
         data_source: config.data_source || (rag.enabled ? 'rag' : (config.shopify ? 'shopify' : 'none')),
         shopify_shop_url: config.shopify?.shop_url || '',
-        shopify_access_token: config.shopify?.access_token || '',
-        shopify_access_token_configured: Boolean(config.shopify?.access_token_configured),
+        shopify_client_id: config.shopify?.client_id || '',
+        shopify_client_secret: config.shopify?.client_secret || '',
+        shopify_client_secret_configured: Boolean(config.shopify?.client_secret_configured),
+        shopify_sync_enabled: config.shopify?.sync_enabled ?? true,
+        shopify_mcp_enabled: config.shopify?.mcp_enabled ?? false,
+        shopify_integration_mode: config.shopify?.integration_mode || 'storefront_ucp_mcp',
+        shopify_agent_profile_url: config.shopify?.agent_profile_url || '',
         api_data_source_enabled: apiDataSource.enabled ?? false,
         api_data_source_name: apiDataSource.name || '',
         api_data_source_url: apiDataSource.url || '',
@@ -607,7 +622,6 @@ export default function AgentWizard() {
       ...prev,
       ...templateDefaults,
       [field]: value,
-      ...(field === 'agent_template' && value !== 'ecommerce' && value !== 'ecommerce_sales' && prev.data_source === 'shopify' ? { data_source: 'none' as const } : {}),
       ...(field === 'provider' ? { provider: AZURE_OPENAI_PROVIDER } : {}),
     }));
   };
@@ -693,7 +707,12 @@ export default function AgentWizard() {
           data_source: agentData.data_source,
           shopify: agentData.data_source === 'shopify' ? {
             shop_url: agentData.shopify_shop_url,
-            access_token: agentData.shopify_access_token,
+            client_id: agentData.shopify_client_id,
+            client_secret: agentData.shopify_client_secret,
+            sync_enabled: agentData.shopify_sync_enabled,
+            mcp_enabled: agentData.shopify_mcp_enabled,
+            integration_mode: agentData.shopify_integration_mode,
+            agent_profile_url: agentData.shopify_agent_profile_url,
           } : undefined,
           api_data_source: {
             enabled: agentData.api_data_source_enabled,
@@ -866,6 +885,15 @@ export default function AgentWizard() {
         max_tokens: agentData.max_tokens,
       },
       data_source: agentData.data_source,
+      shopify: agentData.data_source === 'shopify' ? {
+        shop_url: agentData.shopify_shop_url,
+        client_id: agentData.shopify_client_id,
+        client_secret_configured: agentData.shopify_client_secret_configured,
+        sync_enabled: agentData.shopify_sync_enabled,
+        mcp_enabled: agentData.shopify_mcp_enabled,
+        integration_mode: agentData.shopify_integration_mode,
+        agent_profile_url: agentData.shopify_agent_profile_url,
+      } : undefined,
       skills: { selected: agentData.selected_skill_ids },
       tools: { selected: agentData.selected_tool_ids },
       agent_api: {

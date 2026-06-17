@@ -8,11 +8,12 @@ from .runtime_settings_service import RuntimeSettingsService
 
 logger = structlog.get_logger(__name__)
 
-SHOPIFY_SECRET_FIELDS = ("access_token", "admin_access_token", "customer_access_token")
+SHOPIFY_SECRET_FIELDS = ("access_token", "admin_access_token", "customer_access_token", "client_secret")
 SHOPIFY_TOP_LEVEL_SECRET_FIELDS = {
     "shopify_access_token": "access_token",
     "shopify_admin_token": "admin_access_token",
     "shopify_customer_access_token": "customer_access_token",
+    "shopify_client_secret": "client_secret",
 }
 
 

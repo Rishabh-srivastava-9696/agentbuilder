@@ -103,6 +103,48 @@ class ShopifyOrchestrator(Orchestrator):
             iteration += 1
             try:
                 logger.info("shopify_agent_loop_iteration", iteration=iteration)
+
+                if iteration == 1:
+                    confirmed_cart_add = self._get_confirmed_cart_add()
+                    proactive_call = None if confirmed_cart_add else self._get_proactive_catalog_search()
+                    first_pass_call = confirmed_cart_add or proactive_call
+                    if first_pass_call:
+                        tool_name = first_pass_call["tool_name"]
+                        tool_input = first_pass_call.get("tool_input") or {}
+                        event_name = "shopify_confirmed_cart_add" if confirmed_cart_add else "shopify_proactive_catalog_search"
+                        logger.info(event_name, tool=tool_name, input=tool_input)
+                        if on_status and callable(on_status):
+                            try:
+                                res = on_status(self._get_status_message(tool_name))
+                                if res is not None and inspect.isawaitable(res):
+                                    await res
+                            except Exception as status_err:
+                                logger.warning("status_callback_failed", error=str(status_err))
+
+                        tool_result = await self._execute_tool_action(tool_name, tool_input)
+                        tool_results_map[tool_name] = tool_result
+                        logger.info(
+                            f"{event_name}_result",
+                            tool=tool_name,
+                            success=tool_result.success,
+                            error=tool_result.error,
+                            products=len((tool_result.metadata or {}).get("products") or []),
+                        )
+                        self.conversation.append({
+                            "role": "assistant",
+                            "content": json.dumps(first_pass_call),
+                        })
+                        content = tool_result.error if not tool_result.success else self._format_tool_output(tool_result.data)
+                        self.conversation.append({
+                            "role": "tool",
+                            "name": tool_name,
+                            "content": content,
+                        })
+                        if confirmed_cart_add:
+                            self.conversation.append({
+                                "role": "system",
+                                "content": "The referenced product has been added to the cart. Respond with a concise confirmation using the cart context; do not call update_cart again for the same item.",
+                            })
                 
                 # A. Get next action from LLM
                 message, tool_call = await self._get_next_action()
@@ -156,6 +198,115 @@ class ShopifyOrchestrator(Orchestrator):
 
         logger.warning("shopify_agent_loop_max_iterations_or_loop")
         return "I've run into an issue processing your request. Could you please specify which product or action you'd like me to take?", tool_results_map
+
+    def _get_confirmed_cart_add(self) -> Optional[Dict[str, Any]]:
+        """Resolve pronoun-based add-to-cart requests from the Shopify session focus only."""
+        if not self.tools.get("update_cart"):
+            return None
+
+        last_user_msg = ""
+        for msg in reversed(self.conversation):
+            if msg.get("role") == "user":
+                last_user_msg = str(msg.get("content", ""))
+                break
+        if not last_user_msg:
+            return None
+
+        lowered = last_user_msg.lower().strip()
+        explicit_reference = bool(re.search(r"\b(add|put|place)\s+(it|this|that|one)\b", lowered))
+        cart_reference = bool(re.search(r"\b(add|put|place)\s+(it|this|that|one)?\s*(to|in|into)\s+(my\s+)?cart\b", lowered))
+        short_confirmation = lowered in {
+            "yes",
+            "yes please",
+            "ok",
+            "okay",
+            "sure",
+            "do it",
+            "add it",
+            "add this",
+            "add that",
+            "add to cart",
+            "add it to cart",
+        }
+        if not (explicit_reference or cart_reference or short_confirmation):
+            return None
+
+        focused_products = self.last_searched or self.captured_ids
+        if not focused_products:
+            return None
+
+        title, variant_id = next(iter(focused_products.items()))
+        if not variant_id:
+            return None
+
+        logger.info("shopify_confirmed_cart_add_resolved", title=title, variant_id=variant_id)
+        return {
+            "tool_name": "update_cart",
+            "tool_input": {
+                "add_items": [
+                    {
+                        "product_variant_id": variant_id,
+                        "quantity": 1,
+                        "title": title,
+                    }
+                ]
+            },
+        }
+
+    def _get_proactive_catalog_search(self) -> Optional[Dict[str, Any]]:
+        """Search first for product-intent queries so commerce answers are grounded."""
+        if self.tools.get("search_catalog"):
+            tool_name = "search_catalog"
+        elif self.tools.get("search_shop_catalog"):
+            tool_name = "search_shop_catalog"
+        else:
+            return None
+
+        last_user_msg = ""
+        for msg in reversed(self.conversation):
+            if msg.get("role") == "user":
+                last_user_msg = str(msg.get("content", ""))
+                break
+        if not last_user_msg:
+            return None
+
+        lowered = last_user_msg.lower()
+        cart_only_terms = {"cart", "checkout", "remove", "delete", "quantity", "order status", "my order"}
+        if any(term in lowered for term in cart_only_terms):
+            return None
+
+        product_terms = {
+            "product", "products", "recommend", "show", "find", "search", "price",
+            "prices", "cost", "available", "stock", "in stock", "buy", "add",
+            "pendant", "bracelet", "bangle", "earring", "necklace", "ring",
+            "dress", "shirt", "top", "bottom", "jewelry", "jewellery",
+        }
+        if not any(term in lowered for term in product_terms):
+            return None
+
+        query = lowered
+        query = re.sub(
+            r"\b(can you|could you|would you|do you have|show me|find me|search for|look for|give me|please show|please find)\b",
+            " ",
+            query,
+            flags=re.IGNORECASE,
+        )
+        query = re.sub(
+            r"\b(recommend|show|find|search|give|please|from the store|include prices?|products?|product|items?|two|three|some|any|can|could|would|you|me|for|with|and|or)\b",
+            " ",
+            query,
+            flags=re.IGNORECASE,
+        )
+        query = re.sub(r"[^a-z0-9\s-]", " ", query)
+        query = re.sub(r"\s+", " ", query).strip() or last_user_msg
+
+        return {
+            "tool_name": tool_name,
+            "tool_input": {
+                "query": query,
+                "pagination": {"limit": 5},
+            },
+        }
 
     async def _get_next_action(self) -> Tuple[str, Optional[Dict]]:
         """Consult the LLM to decide the next step."""
@@ -305,7 +456,7 @@ class ShopifyOrchestrator(Orchestrator):
                     pvid = item.get("product_variant_id")
                     if not pvid or not str(pvid).startswith("gid://"):
                         product_name = item.get("title") or item.get("product_name") or "the product"
-                        raise ValueError(f"Missing variant ID for '{product_name}'. You MUST call 'search_shop_catalog' first to find the correct variant ID.")
+                        raise ValueError(f"Missing variant ID for '{product_name}'. You MUST call 'search_catalog' first to find the correct variant ID.")
 
         # 3. Strip any remaining None/null/empty strings to prevent tool failures
         # Specifically target 'cart_id' and 'cartId' if they are invalid
@@ -345,7 +496,7 @@ class ShopifyOrchestrator(Orchestrator):
         products = metadata.get("products", [])
         
         # Reset last_searched if this was a new search
-        if tool_name == "search_shop_catalog":
+        if tool_name in ("search_shop_catalog", "search_catalog"):
             self.last_searched = {}
 
         for p in products:
@@ -355,7 +506,7 @@ class ShopifyOrchestrator(Orchestrator):
             if name and v_id:
                 gid = str(v_id)
                 self.captured_ids[name] = gid
-                if tool_name == "search_shop_catalog":
+                if tool_name in ("search_shop_catalog", "search_catalog"):
                     self.last_searched[name] = gid
 
     def _build_reasoning_prompt(self) -> str:
@@ -367,7 +518,7 @@ class ShopifyOrchestrator(Orchestrator):
         # Detect if we should chain an add
         last_msg = context_window[-1] if context_window else None
         is_tool_after_search = False
-        if last_msg and last_msg["role"] == "tool" and last_msg.get("name") == "search_shop_catalog":
+        if last_msg and last_msg["role"] == "tool" and last_msg.get("name") in ("search_shop_catalog", "search_catalog"):
             is_tool_after_search = True
             
         # Refine: Only chain if the user's intent was to ADD/BUY or CONFIRM
@@ -399,6 +550,8 @@ class ShopifyOrchestrator(Orchestrator):
             elif role == "tool":
                 t_name = str(msg.get("name", "unknown"))
                 text += f"Tool ({t_name}): {content}\n"
+            elif role == "system":
+                text += f"System: {content}\n"
         
         if is_tool_after_search and has_add_intent:
             text += "\n[SYSTEM NOTE]: You just found the product and the user wants to add it. You MUST now return the 'update_cart' JSON immediately. ⛔ DO NOT chat or say 'One moment'. Just return the JSON."
@@ -474,14 +627,14 @@ When you need to call a tool, you MUST return ONLY a JSON object with these EXAC
 }}
 
 Examples:
-- To search: {{"tool_name": "search_shop_catalog", "tool_input": {{"query": "socks", "context": "browsing"}}}}
+- To search: {{"tool_name": "search_catalog", "tool_input": {{"query": "socks", "pagination": {{"limit": 5}}}}}}
 - To add to cart: {{"tool_name": "update_cart", "tool_input": {{"add_items": [{{"product_variant_id": "gid://shopify/ProductVariant/123", "quantity": 1}}]}}}}
 - To remove/decrement from cart: {{"tool_name": "update_cart", "tool_input": {{"remove_items": ["gid://shopify/CartLine/123"], "update_items": [{{"id": "gid://shopify/CartLine/456", "quantity": 1}}]}}}}
 
 ### SEQUENCING EXAMPLES
 Example 1 (Direct Add Request):
 User: "Add white socks"
-Thought: {{"tool_name": "search_shop_catalog", "tool_input": {{"query": "white socks"}}}}
+Thought: {{"tool_name": "search_catalog", "tool_input": {{"query": "white socks", "pagination": {{"limit": 5}}}}}}
 Tool Result: [{{"title": "White Socks", "variant_id": "gid://..."}}]
 Thought: {{"tool_name": "update_cart", "tool_input": {{"add_items": [{{"product_variant_id": "gid://...", "quantity": 1}}]}}}}
 Tool Result: {{"success": true}}
@@ -509,7 +662,7 @@ Thought: "I've removed one pair of white socks. You now have 1 pair remaining."
    - You MUST first call `get_cart` to see the current lines and their quantities.
    - If current quantity is 1: Use `update_cart` with `remove_items`: ["line_id"].
    - If current quantity > 1: Use `update_cart` with `update_items`: [{{"id": "line_id", "quantity": new_qty}}].
-5. **CHECKOUT LINK**: Whenever you update the cart or show cart information, you MUST provide the Checkout URL to the user in your final answer.
+5. **CHECKOUT LINK**: Provide a Checkout URL only after `update_cart` or `get_cart` succeeds and a checkout URL is available. Do not mention checkout URLs for product search/recommendation answers.
 
 ### OUTPUT FORMAT
 - To call a tool: Return ONLY the JSON object. No chat.
