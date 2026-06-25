@@ -9,6 +9,7 @@ from app.services.skill_registry import BuiltInSkillRegistry
 router = APIRouter(dependencies=[Depends(require_dashboard_access)])
 
 
+@router.get("", include_in_schema=False)
 @router.get("/")
 async def list_built_in_skills():
     return {"skills": BuiltInSkillRegistry().list_skills()}

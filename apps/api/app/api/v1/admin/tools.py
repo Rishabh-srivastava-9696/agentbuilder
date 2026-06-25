@@ -9,6 +9,7 @@ from app.services.tool_registry import ToolRegistryService
 router = APIRouter(dependencies=[Depends(require_dashboard_access)])
 
 
+@router.get("", include_in_schema=False)
 @router.get("/")
 async def list_tools():
     return {"tools": ToolRegistryService().list_tools()}
