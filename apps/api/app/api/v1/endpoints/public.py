@@ -46,6 +46,22 @@ def _widget_enabled(configuration: dict[str, Any]) -> bool:
     return widget.get("enabled", True) is not False
 
 
+def _is_commerce_agent(configuration: dict[str, Any]) -> bool:
+    domain = configuration.get("domain") or {}
+    template = str(
+        configuration.get("agent_template")
+        or configuration.get("template")
+        or domain.get("template")
+        or domain.get("type")
+        or ""
+    ).lower()
+    return (
+        configuration.get("data_source") == "shopify"
+        or bool(configuration.get("shopify"))
+        or template in {"ecommerce", "ecommerce_sales", "shopify"}
+    )
+
+
 def _public_agent_config(configuration: dict[str, Any]) -> dict[str, Any]:
     """Return widget-safe configuration without secrets or admin-only material."""
     features = configuration.get("features") or {}
@@ -63,6 +79,7 @@ def _public_agent_config(configuration: dict[str, Any]) -> dict[str, Any]:
     activity_persistence = widget.get("activity_persistence", features.get("activity_persistence", "temporary"))
     if activity_persistence not in ("temporary", "persistent"):
         activity_persistence = "temporary"
+    show_sources = False if _is_commerce_agent(configuration) else widget.get("show_sources", features.get("show_sources", False))
 
     return {
         "domain": domain,
@@ -71,7 +88,7 @@ def _public_agent_config(configuration: dict[str, Any]) -> dict[str, Any]:
         },
         "features": {
             "websockets": features.get("websockets", True),
-            "show_sources": widget.get("show_sources", features.get("show_sources", False)),
+            "show_sources": show_sources,
             "show_product_cards": widget.get("show_product_cards", features.get("show_product_cards", True)),
             "human_takeover": widget.get("human_takeover", features.get("human_takeover", False)),
             "activity_mode": activity_mode,
@@ -81,7 +98,7 @@ def _public_agent_config(configuration: dict[str, Any]) -> dict[str, Any]:
             "widget": {
                 "enabled": widget.get("enabled", True),
                 "preview_enabled": widget.get("preview_enabled", widget.get("enabled", True)),
-                "show_sources": widget.get("show_sources", features.get("show_sources", False)),
+                "show_sources": show_sources,
                 "show_product_cards": widget.get("show_product_cards", features.get("show_product_cards", True)),
                 "human_takeover": widget.get("human_takeover", features.get("human_takeover", False)),
                 "activity_mode": activity_mode,

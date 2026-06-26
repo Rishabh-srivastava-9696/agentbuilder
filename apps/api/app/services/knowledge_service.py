@@ -460,12 +460,13 @@ class KnowledgeService:
     
     async def _process_product_item(self, item: Any, brand_id: str, job_id: str, brand_scope: Optional[Dict[str, Any]] = None):
         """Process a single product item."""
+        display_price = self._display_product_price(item.price, item.currency)
         # Generate text description for embedding
         text_parts = [
             f"Product: {item.name}",
             f"SKU: {item.sku}",
             f"Category: {item.category}",
-            f"Price: {item.price} {item.currency}"
+            f"Price: {display_price}"
         ]
         
         if item.features:
@@ -527,6 +528,18 @@ class KnowledgeService:
             # Update progress (fire-and-forget increment)
             job = await self.job_store.get(job_id) or {}
             await self.job_store.update(job_id, {"processed_chunks": job.get("processed_chunks", 0) + 1})
+
+    def _display_product_price(self, price: Any, currency: Optional[str]) -> str:
+        try:
+            numeric_price = float(price)
+            display_price = numeric_price / 100 if numeric_price >= 10000 else numeric_price
+            if display_price.is_integer():
+                amount = f"{int(display_price):,}"
+            else:
+                amount = f"{display_price:,.2f}"
+        except (TypeError, ValueError):
+            amount = str(price or "0")
+        return f"{currency or 'INR'} {amount}"
     
     async def _process_dealer_item(self, item: Any, brand_id: str, job_id: str, brand_scope: Optional[Dict[str, Any]] = None):
         """Process a single dealer item."""

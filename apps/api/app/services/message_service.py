@@ -30,7 +30,7 @@ from llm.factory import LLMFactory, create_provider_from_env
 
 # Phase 6: SOTA Agentic Orchestrator (package imports)
 from tools.registry import ToolRegistry
-from tools.builtin.retrieval_tool import RetrievalTool
+from tools.builtin.retrieval_tool import CatalogSearchTool, RetrievalTool
 from tools.types import ToolResult
 from agent_runtime.orchestrator import Orchestrator, AgentResult
 from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
@@ -183,6 +183,22 @@ def _deduplicate_entities(entities: list[dict], *identity_keys: str) -> list[dic
         unique_entities.append(entity)
 
     return unique_entities
+
+
+def _is_commerce_agent_config(config: dict[str, Any]) -> bool:
+    domain = config.get("domain") or {}
+    template = str(
+        config.get("agent_template")
+        or config.get("template")
+        or domain.get("template")
+        or domain.get("type")
+        or ""
+    ).lower()
+    return (
+        config.get("data_source") == "shopify"
+        or bool(config.get("shopify"))
+        or template in {"ecommerce", "ecommerce_sales", "shopify"}
+    )
 
 
 class MessageService:
@@ -1266,6 +1282,9 @@ Rules:
         self.tool_registry = ToolRegistry()
         if self.retrieval_pipeline:
             self.tool_registry.register(RetrievalTool(self.retrieval_pipeline))
+            if (self.agent_config or {}).get("data_source") == "shopify":
+                self.tool_registry.register(CatalogSearchTool(self.retrieval_pipeline, name="search_catalog"))
+                self.tool_registry.register(CatalogSearchTool(self.retrieval_pipeline, name="search_shop_catalog"))
 
     async def _configure_runtime_dependencies(
         self,
@@ -1494,7 +1513,11 @@ Rules:
 
                         # Connect and discover remote tools using a stable agent session.
                         remote_tools = await mcp_client.discover_tools(session_id=f"agent:{agent_id}")
+                        local_catalog_tool_names = {"search_catalog", "search_shop_catalog"}
+                        prefer_local_catalog = shopify_conf.get("integration_mode") == "hybrid_catalog_rag_mcp"
                         for tool in remote_tools:
+                            if prefer_local_catalog and tool.name in local_catalog_tool_names:
+                                continue
                             self.tool_registry.register(tool)
 
                         logger.info("mcp_tools_registered", count=len(remote_tools), brand_id=self.brand_id)
@@ -1889,6 +1912,8 @@ Rules:
 
             tool_results = agent_metadata.get("tool_results", {})
             citations, _products, _dealers = _extract_tool_result_metadata(tool_results)
+            if _is_commerce_agent_config(self.agent_config or {}):
+                citations = []
             duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             status_label = "fallback" if agent_metadata.get("fallback") else "success"
             if agent_metadata.get("guardrail_action") == "fallback":
@@ -2685,6 +2710,8 @@ Rules:
 
             # Send final metadata (orchestrator handles retrieval internally)
             citations, safe_products, safe_dealers = _extract_tool_result_metadata(tool_results)
+            if _is_commerce_agent_config(self.agent_config or {}):
+                citations = []
 
             unique_products = _deduplicate_entities(
                 safe_products,

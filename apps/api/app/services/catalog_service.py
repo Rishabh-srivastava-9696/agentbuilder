@@ -80,6 +80,15 @@ def _to_cents(value: Any) -> int:
         return 0
 
 
+def _shopify_currency(product: Optional[Dict[str, Any]] = None, variant: Optional[Dict[str, Any]] = None) -> str:
+    """Shopify product feeds often omit currency; Soundtrails storefront prices are INR."""
+    for source in (variant or {}, product or {}):
+        currency = source.get("currency") or source.get("currencyCode") or source.get("price_currency")
+        if currency:
+            return str(currency).upper()
+    return "INR"
+
+
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "").strip()
 
@@ -111,7 +120,7 @@ def _normalize_shopify(data: dict, base_url: str = "") -> List[dict]:
                 "sku": str(v.get("sku") or v.get("id") or uuid.uuid4()),
                 "name": name,
                 "price": _to_cents(v.get("price", 0)),
-                "currency": "USD",
+                "currency": _shopify_currency(product, v),
                 "category": product_type,
                 "image_url": v_img,
                 "product_url": product_url,
@@ -125,7 +134,7 @@ def _normalize_shopify(data: dict, base_url: str = "") -> List[dict]:
                 "sku": str(product.get("id") or uuid.uuid4()),
                 "name": title,
                 "price": 0,
-                "currency": "USD",
+                "currency": _shopify_currency(product),
                 "category": product_type,
                 "image_url": primary_image,
                 "product_url": product_url,
