@@ -173,6 +173,7 @@ async def _resolve_message_target(
 
 
 def _message_response_payload(response: Any, *, message_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    response_metadata = getattr(response, "metadata", None) or {}
     return {
         "conversation_id": response.conversation_id,
         "message_id": message_id,
@@ -181,11 +182,12 @@ def _message_response_payload(response: Any, *, message_id: str, metadata: dict[
             citation.model_dump() if hasattr(citation, "model_dump") else dict(citation)
             for citation in (response.citations or [])
         ],
-        "products": [],
-        "dealers": [],
+        "products": getattr(response, "products", None) or [],
+        "dealers": getattr(response, "dealers", None) or [],
         "tool_calls": [],
         "metadata": {
             **(metadata or {}),
+            **response_metadata,
             "context_used": response.context_used,
             "confidence_score": response.confidence_score,
             "processing_time_ms": response.processing_time_ms,

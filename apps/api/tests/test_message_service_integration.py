@@ -26,6 +26,16 @@ def _make_settings() -> MagicMock:
     return settings
 
 
+def _empty_memory_context() -> dict:
+    return {
+        "recent_messages": [],
+        "user_facts": [],
+        "matched_rules": [],
+        "escalations": [],
+        "summaries": [],
+    }
+
+
 @pytest.fixture
 def service_bundle():
     settings = _make_settings()
@@ -92,16 +102,13 @@ def service_bundle():
 async def test_process_message_returns_valid_response_and_persists_memory(service_bundle):
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
+    service.agent_config = {"memory": {"long_term": {"enabled": True}}}
 
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    service.short_term.get_recent_messages.return_value = [
+        SimpleNamespace(role=MessageRole.USER, content="Earlier question", metadata={}),
+        SimpleNamespace(role=MessageRole.ASSISTANT, content="Earlier answer", metadata={"cart_id": "cart-1"}),
+    ]
     orchestrator.run.return_value = AgentResult(
         answer="This is a helpful response with citations.",
         metadata={
@@ -145,6 +152,65 @@ async def test_process_message_returns_valid_response_and_persists_memory(servic
     service.episodic.extract_and_store_facts.assert_awaited_once()
     service.short_term.should_summarize.assert_awaited_once_with("conv123")
     orchestrator.run.assert_awaited_once()
+    run_kwargs = orchestrator.run.await_args.kwargs
+    assert [entry["role"] for entry in run_kwargs["chat_history"]] == ["user", "assistant"]
+    assert run_kwargs["context"]["session_state"]["cart_id"] == "cart-1"
+
+
+@pytest.mark.asyncio
+async def test_process_message_returns_products_dealers_and_suppresses_commerce_citations(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    mock_strapi = service_bundle["strapi"]
+    service.agent_config = {
+        "data_source": "shopify",
+        "commerce": {
+            "default_currency": "INR",
+            "currency_policy": "default_only",
+            "display_policy": {"cards_only": True},
+        },
+    }
+
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    product = {"sku": "SPK-1", "name": "Bookshelf Speaker", "price": 999, "currency": "USD"}
+    dealer = {"dealer_id": "DLR-1", "name": "Downtown Audio"}
+    orchestrator.run.return_value = AgentResult(
+        answer="Here is the matching product.",
+        metadata={
+            "validation_confidence": 0.94,
+            "steps_executed": 1,
+            "tool_results": {
+                "catalog": ToolResult(
+                    success=True,
+                    data=None,
+                    metadata={
+                        "sources": ["internal-catalog-source"],
+                        "confidence": 0.94,
+                        "products": [product, {**product}],
+                        "dealers": [dealer, {**dealer}],
+                    },
+                )
+            },
+        },
+    )
+
+    request = MessageRequest(
+        message="show speakers",
+        user_id="user123",
+        agent_id="agent-123",
+        conversation_id="conv123",
+    )
+
+    response = await service.process_message(request)
+
+    assert response.citations == []
+    expected_product = {**product, "currency": "INR", "currency_source": "commerce.default_currency"}
+    assert response.products == [expected_product]
+    assert response.dealers == [dealer]
+    assert response.metadata is not None
+    strapi_metadata = mock_strapi.sync_conversation.call_args.kwargs["assistant_metadata"]
+    assert strapi_metadata["products"] == [expected_product]
+    assert strapi_metadata["dealers"] == [dealer]
 
 
 @pytest.mark.asyncio
@@ -152,15 +218,7 @@ async def test_process_message_blocks_sensitive_data_before_orchestrator(service
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
 
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
 
     request = MessageRequest(
         message="My password: super-secret-123",
@@ -180,15 +238,7 @@ async def test_process_message_blocks_obvious_off_domain_request_before_orchestr
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
 
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
 
     request = MessageRequest(
         message="show bitcoin price",
@@ -210,15 +260,7 @@ async def test_process_message_blocks_unrelated_nutrition_request_before_orchest
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
 
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
 
     request = MessageRequest(
         message="show nutrition supplements",
@@ -239,15 +281,7 @@ async def test_process_message_filters_mixed_scope_request_before_orchestrator(s
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
 
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
     orchestrator.run.return_value = AgentResult(
         answer="Here are relevant commode options.",
         metadata={"validation_confidence": 1.0, "tool_results": {}},
@@ -282,15 +316,7 @@ async def test_process_message_uses_low_confidence_guardrail(service_bundle):
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
 
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
     orchestrator.run.return_value = AgentResult(
         answer="Unsupported confident answer",
         metadata={"validation_confidence": 0.2, "tool_results": {}},
@@ -317,15 +343,7 @@ async def test_process_message_triggers_summary_when_needed(service_bundle):
     orchestrator = service_bundle["orchestrator"]
 
     service.short_term.should_summarize.return_value = True
-    service._build_memory_context = AsyncMock(
-        return_value={
-            "recent_messages": [],
-            "user_facts": [],
-            "matched_rules": [],
-            "escalations": [],
-            "summaries": [],
-        }
-    )
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
     orchestrator.run.return_value = AgentResult(
         answer="Summary-safe response",
         metadata={"validation_confidence": 1.0, "tool_results": {}},
@@ -348,24 +366,28 @@ async def test_stream_message_emits_status_content_and_metadata(service_bundle):
     service = service_bundle["service"]
     orchestrator = service_bundle["orchestrator"]
     mock_strapi = service_bundle["strapi"]
+    service.agent_config = {"memory": {"long_term": {"enabled": True}}}
 
-    orchestrator.run.return_value = AgentResult(
-        answer="Streaming response complete.",
-        metadata={
-            "validation_confidence": 0.91,
-            "tool_results": {
-                "step-1": ToolResult(
-                    success=True,
-                    data=None,
-                    metadata={
-                        "sources": ["doc-stream"],
-                        "confidence": 0.91,
-                        "products": [{"id": "prod-1", "name": "Product 1"}],
-                    },
-                )
+    async def run_orchestrator(query, context, chat_history=None, on_event=None):
+        return AgentResult(
+            answer="Streaming response complete.",
+            metadata={
+                "validation_confidence": 0.91,
+                "tool_results": {
+                    "step-1": ToolResult(
+                        success=True,
+                        data=None,
+                        metadata={
+                            "sources": ["doc-stream"],
+                            "confidence": 0.91,
+                            "products": [{"id": "prod-1", "name": "Product 1"}],
+                        },
+                    )
+                },
             },
-        },
-    )
+        )
+
+    orchestrator.run = run_orchestrator
 
     request = MessageRequest(
         message="Tell me about the product",
@@ -376,7 +398,7 @@ async def test_stream_message_emits_status_content_and_metadata(service_bundle):
 
     chunks = [chunk async for chunk in service.stream_message(request)]
 
-    assert "status" in [chunk.type for chunk in chunks]
+    assert "activity" in [chunk.type for chunk in chunks]
     assert "content" in [chunk.type for chunk in chunks]
     metadata_chunk = next(chunk for chunk in chunks if chunk.type == "metadata")
     assert metadata_chunk.citations[0].doc_id == "doc-stream"
@@ -388,8 +410,66 @@ async def test_stream_message_emits_status_content_and_metadata(service_bundle):
 
 
 @pytest.mark.asyncio
+async def test_stream_message_suppresses_commerce_source_activity(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    mock_strapi = service_bundle["strapi"]
+    service.agent_config = {
+        "data_source": "shopify",
+        "commerce": {
+            "default_currency": "INR",
+            "currency_policy": "default_only",
+            "display_policy": {"cards_only": True},
+        },
+    }
+
+    async def run_orchestrator(query, context, chat_history=None, on_event=None):
+        return AgentResult(
+            answer="Here is the matching product.",
+            metadata={
+                "validation_confidence": 0.91,
+                "tool_results": {
+                    "catalog": ToolResult(
+                        success=True,
+                        data=None,
+                        metadata={
+                            "sources": ["internal-catalog-source"],
+                            "confidence": 0.91,
+                            "products": [{"id": "prod-1", "name": "Product 1", "currency": "USD"}],
+                        },
+                    )
+                },
+            },
+        )
+
+    orchestrator.run = run_orchestrator
+
+    request = MessageRequest(
+        message="show speakers",
+        user_id="user123",
+        agent_id="agent-123",
+        conversation_id="conv123",
+    )
+
+    chunks = [chunk async for chunk in service.stream_message(request)]
+
+    tool_chunk = next(chunk for chunk in chunks if chunk.type == "tool_result")
+    assert "source" not in tool_chunk.content.lower()
+    assert tool_chunk.products[0]["name"] == "Product 1"
+    assert tool_chunk.products[0]["currency"] == "INR"
+    metadata_chunk = next(chunk for chunk in chunks if chunk.type == "metadata")
+    assert metadata_chunk.citations == []
+    assert metadata_chunk.products[0]["name"] == "Product 1"
+    assert metadata_chunk.products[0]["currency"] == "INR"
+    strapi_metadata = mock_strapi.sync_conversation.call_args.kwargs["assistant_metadata"]
+    assert strapi_metadata["products"][0]["name"] == "Product 1"
+    assert strapi_metadata["products"][0]["currency"] == "INR"
+
+
+@pytest.mark.asyncio
 async def test_build_memory_context_aggregates_current_memory_layers(service_bundle):
     service = service_bundle["service"]
+    service.agent_config = {"memory": {"long_term": {"enabled": True}}}
 
     service.short_term.get_recent_messages.return_value = ["recent-message"]
     service.episodic.get_user_facts.return_value = [{"fact": "prefers email"}]

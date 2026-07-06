@@ -193,6 +193,77 @@ describe('ChatWindow', () => {
       );
       expect(screen.getByPlaceholderText('Type your message...')).toBeInTheDocument();
     });
+
+    it('renders products on a resolved assistant message as product cards', () => {
+      setBrand();
+      const productMessages: Message[] = [
+        { id: '1', content: 'Show me earrings', role: 'user', timestamp: new Date() },
+        {
+          id: '2',
+          content: 'These match your search.',
+          role: 'assistant',
+          timestamp: new Date(),
+          products: [
+            {
+              sku: 'HD-001',
+              name: 'Heart Drop Earrings',
+              price: 44900,
+              currency: 'USD',
+              category: 'Jewelry',
+              in_stock: true,
+              product_url: 'https://example.com/products/heart-drop-earrings',
+            },
+          ],
+        },
+      ];
+
+      render(
+        <ChatWindow messages={productMessages} isTyping={false} onSendMessage={vi.fn()} onClose={noopClose} onToggleExpand={noopExpand} />
+      );
+
+      expect(screen.getByText('Product:')).toBeInTheDocument();
+      expect(screen.getByText('Heart Drop Earrings')).toBeInTheDocument();
+      expect(screen.getByText('SKU: HD-001')).toBeInTheDocument();
+      expect(screen.getByText('$449.00')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Learn more about this product' })).toBeInTheDocument();
+    });
+
+    it('does not render citations when showSources is false even if citations exist', () => {
+      setBrand();
+      const citedMessages: Message[] = [
+        { id: '1', content: 'Do you have sourcing?', role: 'user', timestamp: new Date() },
+        {
+          id: '2',
+          content: 'Yes, but sources are disabled for this widget.',
+          role: 'assistant',
+          timestamp: new Date(),
+          citations: [
+            {
+              doc_id: 'catalog-1',
+              title: 'Jewelry Catalog',
+              url: 'https://example.com/catalog',
+              confidence: 0.91,
+              snippet: 'Heart Drop Earrings are listed in the summer catalog.',
+            },
+          ],
+        },
+      ];
+
+      render(
+        <ChatWindow
+          messages={citedMessages}
+          isTyping={false}
+          onSendMessage={vi.fn()}
+          onClose={noopClose}
+          onToggleExpand={noopExpand}
+          showSources={false}
+        />
+      );
+
+      expect(screen.queryByText('Sources')).not.toBeInTheDocument();
+      expect(screen.queryByText('Jewelry Catalog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Heart Drop Earrings are listed in the summer catalog.')).not.toBeInTheDocument();
+    });
   });
 
   describe('cycling subtitle', () => {

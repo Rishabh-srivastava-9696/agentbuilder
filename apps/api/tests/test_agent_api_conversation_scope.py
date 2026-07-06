@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from app.api.v1 import agent_api as agent_api_module
 from app.services.agent_api_keys import AgentApiKeyContext
+from commons.types.responses import MessageResponse
 
 
 class FakeCollection:
@@ -126,3 +127,35 @@ async def test_conversation_owned_by_other_brand_is_rejected(patched_db):
             _context(brand_id="brand-1"),
         )
     assert exc.value.status_code == 403
+
+
+def test_message_response_payload_forwards_commerce_metadata_without_citations():
+    response = MessageResponse(
+        message="Here are two matching products.",
+        conversation_id="conv-1",
+        citations=[],
+        products=[
+            {"id": "prod-1", "name": "Speaker A"},
+            {"id": "prod-2", "name": "Speaker B"},
+        ],
+        dealers=[{"id": "dealer-1", "name": "Downtown Audio"}],
+        metadata={"commerce_intent": {"terms": ["speaker"]}},
+        context_used=1,
+        confidence_score=0.87,
+        processing_time_ms=42,
+    )
+
+    payload = agent_api_module._message_response_payload(
+        response,
+        message_id="msg-1",
+        metadata={"client_request_id": "req-1"},
+    )
+
+    assert payload["products"] == response.products
+    assert payload["dealers"] == response.dealers
+    assert payload["citations"] == []
+    assert payload["metadata"]["commerce_intent"] == {"terms": ["speaker"]}
+    assert payload["metadata"]["client_request_id"] == "req-1"
+    assert payload["metadata"]["context_used"] == 1
+    assert payload["metadata"]["confidence_score"] == 0.87
+    assert payload["metadata"]["processing_time_ms"] == 42

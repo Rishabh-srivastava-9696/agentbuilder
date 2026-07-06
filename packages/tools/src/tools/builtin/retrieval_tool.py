@@ -261,7 +261,7 @@ class CatalogSearchTool(RetrievalTool):
     def _display_price(self, price: Any, currency: Any) -> str:
         try:
             numeric_price = float(price)
-            display_price = numeric_price / 100 if numeric_price >= 10000 else numeric_price
+            display_price = numeric_price / 100
             amount = f"{int(display_price):,}" if display_price.is_integer() else f"{display_price:,.2f}"
         except (TypeError, ValueError):
             amount = str(price or "0")

@@ -349,11 +349,21 @@ class CommerceRetrievalPipeline:
         return item
 
     def _normalize_currency(self, currency: Any) -> Tuple[Optional[str], str]:
-        if currency not in (None, "") and str(currency).strip():
-            return str(currency).strip().upper(), "product"
         fallback = self.default_currency()
-        if fallback:
+        policy = str(self.commerce_config.get("currency_policy") or "catalog_first_config_fallback").strip().lower()
+        catalog_currency = str(currency).strip().upper() if currency not in (None, "") and str(currency).strip() else None
+
+        if policy == "default_only":
+            if fallback:
+                return fallback, "commerce.default_currency"
+            return None, "missing"
+
+        if catalog_currency:
+            return catalog_currency, "product"
+
+        if policy != "catalog_only" and fallback:
             return fallback, "commerce.default_currency"
+
         return None, "missing"
 
     def _fuse_ranked_products(self, ranked_lists: List[List[Dict[str, Any]]], *, limit: int) -> List[Dict[str, Any]]:

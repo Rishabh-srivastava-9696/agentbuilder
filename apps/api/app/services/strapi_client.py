@@ -5,6 +5,7 @@ to the Strapi dashboard at POST /session-save and POST /chat-save.
 
 import asyncio
 import structlog
+from typing import Any
 from ..monitoring import STRAPI_SYNC_COUNT
 
 try:
@@ -42,6 +43,7 @@ class StrapiClient:
         *,
         brand_slug: str | None = None,
         agent_id: str | None = None,
+        assistant_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Schedule a non-blocking Strapi sync for one full conversation turn."""
         if not self._enabled:
@@ -53,6 +55,7 @@ class StrapiClient:
                 assistant_message,
                 brand_slug=brand_slug,
                 agent_id=agent_id,
+                assistant_metadata=assistant_metadata,
             ),
             name=f"strapi_sync_{conversation_id}",
         )
@@ -87,6 +90,7 @@ class StrapiClient:
         brand_slug: str | None = None,
         agent_id: str | None = None,
         timestamp: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Fire-and-forget save of a single message."""
         if not self._enabled:
@@ -99,6 +103,7 @@ class StrapiClient:
                 brand_slug=brand_slug,
                 agent_id=agent_id,
                 timestamp=timestamp,
+                metadata=metadata,
             ),
             name=f"strapi_msg_{conversation_id}",
         )
@@ -112,6 +117,7 @@ class StrapiClient:
         brand_slug: str | None = None,
         agent_id: str | None = None,
         timestamp: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         await self._ensure_session(
             conversation_id,
@@ -126,6 +132,7 @@ class StrapiClient:
             brand_slug=brand_slug,
             agent_id=agent_id,
             timestamp=timestamp,
+            metadata=metadata,
         )
 
     # ── internals ──────────────────────────────────────────────────────────────
@@ -138,6 +145,7 @@ class StrapiClient:
         *,
         brand_slug: str | None = None,
         agent_id: str | None = None,
+        assistant_metadata: dict[str, Any] | None = None,
     ) -> None:
         await self._ensure_session(conversation_id, brand_slug=brand_slug, agent_id=agent_id)
         await self._save_message(
@@ -153,6 +161,7 @@ class StrapiClient:
             "agent",
             brand_slug=brand_slug,
             agent_id=agent_id,
+            metadata=assistant_metadata,
         )
 
     async def _ensure_session(
@@ -196,20 +205,24 @@ class StrapiClient:
         brand_slug: str | None = None,
         agent_id: str | None = None,
         timestamp: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         try:
             if not await self._allow_sync("message", conversation_id, brand_slug, agent_id):
                 return
+            payload = {
+                "conversation_id": conversation_id,
+                "message_content": content,
+                "role": role,
+                "brand_slug": brand_slug,
+                "agent_id": agent_id,
+                "timestamp": timestamp,
+            }
+            if metadata is not None:
+                payload["metadata"] = metadata
             await self._post_with_retry(
                 "/api/chat-save",
-                {
-                    "conversation_id": conversation_id,
-                    "message_content": content,
-                    "role": role,
-                    "brand_slug": brand_slug,
-                    "agent_id": agent_id,
-                    "timestamp": timestamp,
-                },
+                payload,
                 operation="message",
                 conversation_id=conversation_id,
                 brand_slug=brand_slug,

@@ -131,6 +131,67 @@ def test_catalog_capture_preserves_tool_validated_order_and_metadata():
     assert result.data.splitlines()[1].startswith("1. Plain Earrings")
 
 
+def test_catalog_capture_applies_configured_default_only_currency_to_prompt_and_cards():
+    orchestrator = ShopifyOrchestrator(FakeLLM(), FakeTools())
+    orchestrator._initialize_session_state(
+        chat_history=None,
+        context={"commerce": {"default_currency": "INR", "currency_policy": "default_only"}},
+    )
+    result = ToolResult(
+        success=True,
+        data="",
+        metadata={
+            "products": [
+                {
+                    "rank": 1,
+                    "name": "Klipsch Nashville Portable Bluetooth Speaker",
+                    "variant_id": "gid://shopify/ProductVariant/1",
+                    "id": "gid://shopify/ProductVariant/1",
+                    "price": 2210000,
+                    "currency": "USD",
+                    "currency_source": "product",
+                }
+            ],
+        },
+    )
+
+    orchestrator._capture_result_state("search_catalog", result)
+
+    product_card = result.metadata["products"][0]
+    assert product_card["currency"] == "INR"
+    assert product_card["currency_source"] == "commerce.default_currency"
+    assert "INR 22,100" in result.data
+    assert "USD" not in result.data
+
+
+def test_session_focus_applies_configured_default_only_currency():
+    orchestrator = ShopifyOrchestrator(FakeLLM(), FakeTools())
+
+    orchestrator._initialize_session_state(
+        chat_history=None,
+        context={
+            "commerce": {"default_currency": "INR", "currency_policy": "default_only"},
+            "session_state": {
+                "active_product_focus": [
+                    {
+                        "rank": 1,
+                        "name": "Klipsch Detroit Portable Bluetooth Speaker",
+                        "variant_id": "gid://shopify/ProductVariant/1",
+                        "price": 4290000,
+                        "currency": "USD",
+                    }
+                ]
+            },
+        },
+    )
+
+    prompt = orchestrator._get_combined_system_prompt()
+
+    assert orchestrator.active_product_focus[0]["currency"] == "INR"
+    assert "price: INR 42,900" in prompt
+    assert "USD" not in prompt
+
+
 def test_reference_add_without_focus_asks_for_clarification_not_tool_call():
     orchestrator = ShopifyOrchestrator(FakeLLM(), FakeTools(update_cart=FakeUpdateCartTool()))
     orchestrator.conversation = [{"role": "user", "content": "add this product to cart"}]

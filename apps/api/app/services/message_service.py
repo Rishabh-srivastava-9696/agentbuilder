@@ -111,6 +111,45 @@ def _sanitize_for_json(data: dict) -> dict:
         return {}
 
 
+def _normalize_commerce_product_currency(product: dict, agent_config: dict | None) -> dict:
+    """Apply configured commerce currency policy before products leave the API."""
+    if not isinstance(product, dict) or not is_commerce_agent_config(agent_config or {}):
+        return product
+
+    commerce = (agent_config or {}).get("commerce") or {}
+    default_currency = str(commerce.get("default_currency") or "").strip().upper() or None
+    policy = str(commerce.get("currency_policy") or "catalog_first_config_fallback").strip().lower()
+    catalog_currency = (
+        str(product.get("currency")).strip().upper()
+        if product.get("currency") not in (None, "") and str(product.get("currency")).strip()
+        else None
+    )
+
+    normalized = dict(product)
+    if policy == "default_only":
+        normalized["currency"] = default_currency
+        normalized["currency_source"] = "commerce.default_currency" if default_currency else "missing"
+        return normalized
+
+    if catalog_currency:
+        normalized["currency"] = catalog_currency
+        normalized["currency_source"] = normalized.get("currency_source") or "product"
+        return normalized
+
+    if policy != "catalog_only" and default_currency:
+        normalized["currency"] = default_currency
+        normalized["currency_source"] = "commerce.default_currency"
+        return normalized
+
+    normalized["currency"] = None
+    normalized["currency_source"] = "missing"
+    return normalized
+
+
+def _normalize_commerce_products_currency(products: list[dict], agent_config: dict | None) -> list[dict]:
+    return [_normalize_commerce_product_currency(product, agent_config) for product in products]
+
+
 def _extract_tool_result_metadata(tool_results: dict) -> tuple[list[dict], list[dict], list[dict]]:
     """Normalize citations, products, and dealers from orchestrator tool metadata."""
     citations: list[dict] = []
@@ -1783,6 +1822,8 @@ Rules:
                 "prompt_metadata": self.prompt_metadata,
                 "capability_scope": capability_scope,
             }
+            if is_commerce_agent_config(self.agent_config or {}):
+                context_dict["commerce"] = (self.agent_config or {}).get("commerce") or {}
 
             # 4. RUN SOTA ORCHESTRATOR LOOP
             # Instead of linear retrieve->generate, let the agent plan and execute.
@@ -1809,6 +1850,7 @@ Rules:
             else:
                 agent_result = await self.orchestrator.run(
                     query=runtime_message,
+                    chat_history=chat_history,
                     context=context_dict
                 )
 
@@ -1839,6 +1881,48 @@ Rules:
             # If we have an existing cart_id from session_state and no new one was created, keep it
             if not saved_cart_id and session_state.get("cart_id"):
                 saved_cart_id = session_state["cart_id"]
+
+            tool_results = agent_metadata.get("tool_results", {})
+            citations, safe_products, safe_dealers = _extract_tool_result_metadata(tool_results)
+            is_commerce_agent = is_commerce_agent_config(self.agent_config or {})
+            if is_commerce_agent:
+                citations = []
+                safe_products = _normalize_commerce_products_currency(safe_products, self.agent_config or {})
+            unique_products = _deduplicate_entities(
+                safe_products,
+                "id",
+                "sku",
+                "product_id",
+                "variant_id",
+                "name",
+            )
+            unique_dealers = _deduplicate_entities(
+                safe_dealers,
+                "id",
+                "dealer_id",
+                "email",
+                "phone",
+                "name",
+            )
+            response_metadata = {
+                "commerce_intent": _sanitize_for_json(agent_metadata.get("commerce_intent") or agent_metadata.get("last_constraints") or {}),
+                "active_product_focus": _sanitize_for_json(
+                    _normalize_commerce_products_currency(
+                        agent_metadata.get("active_product_focus") or [],
+                        self.agent_config or {},
+                    )
+                ),
+                "product_reference_map": _sanitize_for_json(agent_metadata.get("product_reference_map") or {}),
+                "original_query": agent_metadata.get("original_query") or agent_metadata.get("last_user_query"),
+                "search_query": agent_metadata.get("search_query") or agent_metadata.get("last_search_query"),
+                "rerank_results": _sanitize_for_json(agent_metadata.get("rerank_results") or []),
+                "resolved_reference": _sanitize_for_json(agent_metadata.get("resolved_reference") or {}),
+            } if is_commerce_agent or unique_products or unique_dealers else None
+            strapi_assistant_metadata = {
+                "products": unique_products,
+                "dealers": unique_dealers,
+                "metadata": response_metadata or {},
+            } if response_metadata is not None or unique_products or unique_dealers else None
 
             # 5. Store assistant response
             if short_term_enabled:
@@ -1882,6 +1966,7 @@ Rules:
                 assistant_message=response_text,
                 brand_slug=self.brand_id,
                 agent_id=agent_id,
+                assistant_metadata=strapi_assistant_metadata,
             )
 
             # 6. Extract Facts & Auto-Summary (Async)
@@ -1897,10 +1982,6 @@ Rules:
                 if await self.short_term.should_summarize(conversation_id):
                     await self.short_term.trigger_summary(conversation_id)
 
-            tool_results = agent_metadata.get("tool_results", {})
-            citations, _products, _dealers = _extract_tool_result_metadata(tool_results)
-            if is_commerce_agent_config(self.agent_config or {}):
-                citations = []
             duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             status_label = "fallback" if agent_metadata.get("fallback") else "success"
             if agent_metadata.get("guardrail_action") == "fallback":
@@ -1965,6 +2046,9 @@ Rules:
                 context_used=len(tool_results),
                 confidence_score=confidence_score,
                 processing_time_ms=duration_ms,
+                products=unique_products,
+                dealers=unique_dealers,
+                metadata=response_metadata,
             )
 
         except Exception as e:
@@ -2344,6 +2428,8 @@ Rules:
                 "prompt_metadata": self.prompt_metadata,
                 "capability_scope": capability_scope,
             }
+            if is_commerce_agent_config(self.agent_config or {}):
+                prompt_context["commerce"] = (self.agent_config or {}).get("commerce") or {}
             if lalkitab_plan.handled and lalkitab_plan.api_context:
                 prompt_context["prompt_runtime"]["calculated_api_context"] = {
                     "normalized_birth_input": lalkitab_plan.api_context.get("normalized_birth_input"),
@@ -2483,6 +2569,7 @@ Rules:
                 }
 
             tool_results = agent_metadata.get("tool_results", {})
+            is_commerce_agent = is_commerce_agent_config(self.agent_config or {})
             for tool_name, tool_result in tool_results.items():
                 if not hasattr(tool_result, "metadata") or not tool_result.metadata:
                     continue
@@ -2506,8 +2593,10 @@ Rules:
                 if agent_metadata.get("lalkitab_runtime") and connector_metadata.get("connector_id"):
                     continue
                 products = [_sanitize_for_json(product) for product in (tool_metadata.get("products") or [])]
+                if is_commerce_agent:
+                    products = _normalize_commerce_products_currency(products, self.agent_config or {})
                 dealers = [_sanitize_for_json(dealer) for dealer in (tool_metadata.get("dealers") or [])]
-                sources = tool_metadata.get("sources") or []
+                sources = [] if is_commerce_agent else (tool_metadata.get("sources") or [])
                 summary_parts = []
                 if products:
                     summary_parts.append(f"{len(products)} product result{'s' if len(products) != 1 else ''}")
@@ -2671,6 +2760,45 @@ Rules:
                     }
                 )
 
+            # Sync to Strapi dashboard (fire-and-forget — never blocks streaming)
+            _, stream_products, stream_dealers = _extract_tool_result_metadata(tool_results)
+            if is_commerce_agent_config(self.agent_config or {}):
+                stream_products = _normalize_commerce_products_currency(stream_products, self.agent_config or {})
+            strapi_products = _deduplicate_entities(
+                stream_products,
+                "id",
+                "sku",
+                "product_id",
+                "variant_id",
+                "name",
+            )
+            strapi_dealers = _deduplicate_entities(
+                stream_dealers,
+                "id",
+                "dealer_id",
+                "email",
+                "phone",
+                "name",
+            )
+            strapi_response_metadata = {
+                "commerce_intent": _sanitize_for_json(agent_metadata.get("commerce_intent") or agent_metadata.get("last_constraints") or {}),
+                "active_product_focus": _sanitize_for_json(
+                    _normalize_commerce_products_currency(
+                        agent_metadata.get("active_product_focus") or [],
+                        self.agent_config or {},
+                    )
+                ),
+                "product_reference_map": _sanitize_for_json(agent_metadata.get("product_reference_map") or {}),
+                "original_query": agent_metadata.get("original_query") or agent_metadata.get("last_user_query"),
+                "search_query": agent_metadata.get("search_query") or agent_metadata.get("last_search_query"),
+                "rerank_results": _sanitize_for_json(agent_metadata.get("rerank_results") or []),
+                "resolved_reference": _sanitize_for_json(agent_metadata.get("resolved_reference") or {}),
+            } if is_commerce_agent_config(self.agent_config or {}) or strapi_products or strapi_dealers else None
+            strapi_assistant_metadata = {
+                "products": strapi_products,
+                "dealers": strapi_dealers,
+                "metadata": strapi_response_metadata or {},
+            } if strapi_response_metadata is not None or strapi_products or strapi_dealers else None
 
             # Sync to Strapi dashboard (fire-and-forget — never blocks streaming)
             self.strapi.sync_conversation(
@@ -2679,6 +2807,7 @@ Rules:
                 assistant_message=full_response,
                 brand_slug=self.brand_id,
                 agent_id=agent_id,
+                assistant_metadata=strapi_assistant_metadata,
             )
 
             # Extract episodic facts
@@ -2699,6 +2828,7 @@ Rules:
             citations, safe_products, safe_dealers = _extract_tool_result_metadata(tool_results)
             if is_commerce_agent_config(self.agent_config or {}):
                 citations = []
+                safe_products = _normalize_commerce_products_currency(safe_products, self.agent_config or {})
 
             unique_products = _deduplicate_entities(
                 safe_products,
@@ -2728,7 +2858,12 @@ Rules:
                 dealers=unique_dealers,
                 metadata={
                     "commerce_intent": _sanitize_for_json(agent_metadata.get("commerce_intent") or agent_metadata.get("last_constraints") or {}),
-                    "active_product_focus": _sanitize_for_json(agent_metadata.get("active_product_focus") or []),
+                    "active_product_focus": _sanitize_for_json(
+                        _normalize_commerce_products_currency(
+                            agent_metadata.get("active_product_focus") or [],
+                            self.agent_config or {},
+                        )
+                    ),
                     "product_reference_map": _sanitize_for_json(agent_metadata.get("product_reference_map") or {}),
                     "original_query": agent_metadata.get("original_query") or agent_metadata.get("last_user_query"),
                     "search_query": agent_metadata.get("search_query") or agent_metadata.get("last_search_query"),

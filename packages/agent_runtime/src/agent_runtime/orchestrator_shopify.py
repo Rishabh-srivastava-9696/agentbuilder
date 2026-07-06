@@ -35,6 +35,7 @@ class ShopifyOrchestrator(Orchestrator):
         self.cart_lines: List[Dict[str, Any]] = []
         self.conversation: List[Dict[str, Any]] = []
         self.prompt_runtime_context: Dict[str, Any] = {}
+        self.commerce_config: Dict[str, Any] = {}
         self.active_product_focus: List[Dict[str, Any]] = []
         self.product_reference_map: Dict[str, Dict[str, Any]] = {}
         self.last_user_query: Optional[str] = None
@@ -106,6 +107,9 @@ class ShopifyOrchestrator(Orchestrator):
         self.resolved_reference = None
         self.pending_clarification_response = None
         self.prompt_runtime_context = (context or {}).get("prompt_runtime", {})
+        self.commerce_config = (context or {}).get("commerce") or {}
+        self.active_product_focus = self._normalize_focus_products(self.active_product_focus)
+        self.product_reference_map = self._build_product_reference_map(self.active_product_focus)
         
         self.conversation = []
         if chat_history:
@@ -778,6 +782,7 @@ class ShopifyOrchestrator(Orchestrator):
     def _normalize_focus_product(self, product: Dict[str, Any], original_rank: int) -> Dict[str, Any]:
         name = str(product.get("name") or product.get("title") or product.get("sku") or f"Product {original_rank}")
         variant_id = str(product.get("variant_id") or product.get("id") or product.get("product_id") or "")
+        currency, currency_source = self._normalize_product_currency(product.get("currency"), product.get("currency_source"))
         normalized = dict(product)
         normalized.update({
             "rank": original_rank,
@@ -787,12 +792,31 @@ class ShopifyOrchestrator(Orchestrator):
             "variant_id": variant_id,
             "id": product.get("id") or variant_id,
             "price": product.get("price"),
-            "currency": product.get("currency"),
+            "currency": currency,
+            "currency_source": currency_source,
             "sku": product.get("sku"),
             "product_url": product.get("product_url") or product.get("url"),
             "image_url": product.get("image_url") or product.get("image"),
         })
         return normalized
+
+    def _normalize_product_currency(self, currency: Any, currency_source: Any = None) -> Tuple[Optional[str], str]:
+        default_currency = str(self.commerce_config.get("default_currency") or "").strip().upper() or None
+        policy = str(self.commerce_config.get("currency_policy") or "catalog_first_config_fallback").strip().lower()
+        catalog_currency = str(currency).strip().upper() if currency not in (None, "") and str(currency).strip() else None
+
+        if policy == "default_only":
+            if default_currency:
+                return default_currency, "commerce.default_currency"
+            return None, "missing"
+
+        if catalog_currency:
+            return catalog_currency, str(currency_source or "product")
+
+        if policy != "catalog_only" and default_currency:
+            return default_currency, "commerce.default_currency"
+
+        return None, "missing"
 
     def _rerank_products(self, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return self._normalize_focus_products(products)

@@ -21,6 +21,9 @@ class MessageResponse(BaseModel):
     message: str
     conversation_id: str
     citations: List[Citation] = []
+    products: List[Dict[str, Any]] = []
+    dealers: List[Dict[str, Any]] = []
+    metadata: Optional[Dict[str, Any]] = None
     context_used: int = 0
     confidence_score: float = Field(..., ge=0.0, le=1.0)
     processing_time_ms: Optional[int] = None

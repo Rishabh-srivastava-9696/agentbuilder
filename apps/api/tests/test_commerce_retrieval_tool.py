@@ -71,6 +71,7 @@ def product_chunk(**product_data):
 def commerce_config():
     return {
         "default_currency": "usd",
+        "currency_policy": "catalog_first_config_fallback",
         "taxonomy": {
             "category_field": "category",
             "product_type_field": "product_type",
@@ -120,9 +121,70 @@ async def test_catalog_search_normalizes_missing_currency_from_config():
     )
 
     assert result.success is True
+    assert "Bookshelf Speaker - USD 9.99" in result.data
     assert result.metadata["products"][0]["currency"] == "USD"
     assert result.metadata["products"][0]["currency_source"] == "commerce.default_currency"
     assert result.metadata["budget_filter"] == {"max_amount": 1000.0, "currency": "USD"}
+
+
+@pytest.mark.asyncio
+async def test_catalog_search_honors_default_only_currency_policy():
+    tool = CatalogSearchTool(
+        FakeRetrievalPipeline(
+            rows=[
+                product_row(
+                    sku="SPK-1",
+                    name="Bookshelf Speaker",
+                    product_type="speaker",
+                    category="Speakers",
+                    price=999,
+                    currency="USD",
+                )
+            ]
+        )
+    )
+
+    config = {
+        **commerce_config(),
+        "default_currency": "inr",
+        "currency_policy": "default_only",
+    }
+
+    result = await tool.run(query="bookshelf speaker", commerce_config=config)
+
+    assert "Bookshelf Speaker - INR 9.99" in result.data
+    assert result.metadata["products"][0]["currency"] == "INR"
+    assert result.metadata["products"][0]["currency_source"] == "commerce.default_currency"
+
+
+@pytest.mark.asyncio
+async def test_catalog_search_honors_catalog_only_currency_policy():
+    tool = CatalogSearchTool(
+        FakeRetrievalPipeline(
+            rows=[
+                product_row(
+                    sku="SPK-1",
+                    name="Bookshelf Speaker",
+                    product_type="speaker",
+                    category="Speakers",
+                    price=999,
+                    currency="",
+                )
+            ]
+        )
+    )
+
+    config = {
+        **commerce_config(),
+        "default_currency": "inr",
+        "currency_policy": "catalog_only",
+    }
+
+    result = await tool.run(query="bookshelf speaker", commerce_config=config)
+
+    assert "Bookshelf Speaker - 9.99" in result.data
+    assert result.metadata["products"][0]["currency"] is None
+    assert result.metadata["products"][0]["currency_source"] == "missing"
 
 
 @pytest.mark.asyncio
