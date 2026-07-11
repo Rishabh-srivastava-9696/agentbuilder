@@ -133,6 +133,9 @@ export interface AgentStudioData {
   api_data_source_usage: string;
   context_connectors?: ContextConnector[];
   url_context_boost_enabled: boolean;
+  /** Per-agent chat artifact settings keyed by artifact type id
+   *  (e.g. { kundali_chart: { enabled: true } }). */
+  artifacts_config?: Record<string, { enabled: boolean; options?: Record<string, any> }>;
 }
 
 export interface AgentStudioCommonProps {

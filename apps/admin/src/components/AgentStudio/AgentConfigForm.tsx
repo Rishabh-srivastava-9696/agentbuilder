@@ -1,10 +1,58 @@
 import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   AdjustmentsHorizontalIcon,
   SparklesIcon,
 } from '@heroicons/react/24/outline';
 import { AZURE_OPENAI_PROVIDER_LABEL, getAzureDeploymentOptions } from '../../utils/llmOptions';
+import { api, type ArtifactTypeDefinition } from '../../api/client';
 import type { AgentStudioFormProps } from './types';
+
+/** Common ISO-4217 currencies for the product-card currency dropdown. */
+const CURRENCY_OPTIONS: Array<{ code: string; label: string }> = [
+  { code: 'INR', label: 'INR — Indian Rupee' },
+  { code: 'USD', label: 'USD — US Dollar' },
+  { code: 'EUR', label: 'EUR — Euro' },
+  { code: 'GBP', label: 'GBP — British Pound' },
+  { code: 'AED', label: 'AED — UAE Dirham' },
+  { code: 'SAR', label: 'SAR — Saudi Riyal' },
+  { code: 'QAR', label: 'QAR — Qatari Riyal' },
+  { code: 'KWD', label: 'KWD — Kuwaiti Dinar' },
+  { code: 'BHD', label: 'BHD — Bahraini Dinar' },
+  { code: 'OMR', label: 'OMR — Omani Rial' },
+  { code: 'SGD', label: 'SGD — Singapore Dollar' },
+  { code: 'MYR', label: 'MYR — Malaysian Ringgit' },
+  { code: 'THB', label: 'THB — Thai Baht' },
+  { code: 'IDR', label: 'IDR — Indonesian Rupiah' },
+  { code: 'PHP', label: 'PHP — Philippine Peso' },
+  { code: 'VND', label: 'VND — Vietnamese Dong' },
+  { code: 'JPY', label: 'JPY — Japanese Yen' },
+  { code: 'CNY', label: 'CNY — Chinese Yuan' },
+  { code: 'HKD', label: 'HKD — Hong Kong Dollar' },
+  { code: 'KRW', label: 'KRW — South Korean Won' },
+  { code: 'AUD', label: 'AUD — Australian Dollar' },
+  { code: 'NZD', label: 'NZD — New Zealand Dollar' },
+  { code: 'CAD', label: 'CAD — Canadian Dollar' },
+  { code: 'CHF', label: 'CHF — Swiss Franc' },
+  { code: 'SEK', label: 'SEK — Swedish Krona' },
+  { code: 'NOK', label: 'NOK — Norwegian Krone' },
+  { code: 'DKK', label: 'DKK — Danish Krone' },
+  { code: 'PLN', label: 'PLN — Polish Zloty' },
+  { code: 'CZK', label: 'CZK — Czech Koruna' },
+  { code: 'TRY', label: 'TRY — Turkish Lira' },
+  { code: 'ZAR', label: 'ZAR — South African Rand' },
+  { code: 'NGN', label: 'NGN — Nigerian Naira' },
+  { code: 'KES', label: 'KES — Kenyan Shilling' },
+  { code: 'EGP', label: 'EGP — Egyptian Pound' },
+  { code: 'BRL', label: 'BRL — Brazilian Real' },
+  { code: 'MXN', label: 'MXN — Mexican Peso' },
+  { code: 'ARS', label: 'ARS — Argentine Peso' },
+  { code: 'CLP', label: 'CLP — Chilean Peso' },
+  { code: 'BDT', label: 'BDT — Bangladeshi Taka' },
+  { code: 'LKR', label: 'LKR — Sri Lankan Rupee' },
+  { code: 'NPR', label: 'NPR — Nepalese Rupee' },
+  { code: 'PKR', label: 'PKR — Pakistani Rupee' },
+];
 
 const templates = [
   { id: 'generic', name: 'General Assistant' },
@@ -80,6 +128,28 @@ export default function AgentConfigForm({
   deploymentsLoading,
 }: AgentStudioFormProps) {
   const modelOptions = getAzureDeploymentOptions(deployments, data.model);
+  const { data: artifactTypes = [] } = useQuery<ArtifactTypeDefinition[]>({
+    queryKey: ['admin', 'artifact-types'],
+    queryFn: api.getArtifactTypes,
+    staleTime: 5 * 60_000,
+  });
+  const applicableArtifacts = artifactTypes.filter((artifact) => {
+    const artifactTemplates = artifact.applies_to_templates || [];
+    return artifactTemplates.length === 0 || artifactTemplates.includes(data.agent_template);
+  });
+  const isArtifactEnabled = (artifact: ArtifactTypeDefinition) => {
+    const entry = data.artifacts_config?.[artifact.id];
+    return typeof entry?.enabled === 'boolean' ? entry.enabled : (artifact.default_enabled ?? true);
+  };
+  const toggleArtifact = (artifact: ArtifactTypeDefinition) => {
+    onChange('artifacts_config', {
+      ...(data.artifacts_config || {}),
+      [artifact.id]: {
+        ...(data.artifacts_config?.[artifact.id] || {}),
+        enabled: !isArtifactEnabled(artifact),
+      },
+    });
+  };
   const isEcommerce = data.agent_template === 'ecommerce' || data.agent_template === 'ecommerce_sales';
   const showShopifySetup = isEcommerce || data.data_source === 'shopify' || data.selected_tool_ids?.includes('shopify');
   const cleanShopDomain = data.shopify_shop_url.replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -287,13 +357,26 @@ export default function AgentConfigForm({
             </div>
 
             <div className="mt-3 grid gap-3 md:grid-cols-3">
-              <Field label="Default currency" hint="Used when catalog data does not provide a currency.">
-                <input
+              <Field
+                label="Product card currency"
+                hint="Currency shown on product cards. With the catalog-first policy it fills in when the catalog has no currency; with 'Default only' it always overrides."
+              >
+                <select
                   value={data.commerce_default_currency || ''}
-                  onChange={(event) => onChange('commerce_default_currency', event.target.value.toUpperCase())}
+                  onChange={(event) => onChange('commerce_default_currency', event.target.value)}
                   className={inputClass}
-                  placeholder="ISO-4217 code"
-                />
+                >
+                  <option value="">Catalog currency only (no default)</option>
+                  {CURRENCY_OPTIONS.map((currency) => (
+                    <option key={currency.code} value={currency.code}>{currency.label}</option>
+                  ))}
+                  {data.commerce_default_currency
+                    && !CURRENCY_OPTIONS.some((currency) => currency.code === data.commerce_default_currency) && (
+                    <option value={data.commerce_default_currency}>
+                      {data.commerce_default_currency} — custom
+                    </option>
+                  )}
+                </select>
               </Field>
 
               <Field label="Currency policy">
@@ -499,6 +582,34 @@ export default function AgentConfigForm({
             Configure the astrology API in Agent Tools, then instruct the agent to ask for missing birth date,
             time, and place before giving chart-specific guidance.
           </p>
+        </div>
+      )}
+
+      {applicableArtifacts.length > 0 && (
+        <div className="rounded-md border border-gray-200 bg-white p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Chat Artifacts</h3>
+              <p className="mt-1 text-xs leading-5 text-gray-500">
+                Rich visual components this agent can attach to its replies. Disabled artifacts fall back
+                to a plain-text rendering inside the answer.
+              </p>
+            </div>
+            <span className="shrink-0 rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
+              {applicableArtifacts.filter(isArtifactEnabled).length} of {applicableArtifacts.length} enabled
+            </span>
+          </div>
+          <div className="mt-3 space-y-3">
+            {applicableArtifacts.map((artifact) => (
+              <Switch
+                key={artifact.id}
+                checked={isArtifactEnabled(artifact)}
+                onChange={() => toggleArtifact(artifact)}
+                label={artifact.name}
+                description={artifact.description || ''}
+              />
+            ))}
+          </div>
         </div>
       )}
 

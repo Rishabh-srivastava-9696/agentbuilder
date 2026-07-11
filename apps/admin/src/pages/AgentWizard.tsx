@@ -464,6 +464,7 @@ interface AgentData {
   api_data_source_usage: string;
   context_connectors: ContextConnector[];
   url_context_boost_enabled: boolean;
+  artifacts_config: Record<string, { enabled: boolean; options?: Record<string, any> }>;
 
   // Skills, Tools, Agent API
   selected_skill_ids: string[];
@@ -588,6 +589,7 @@ const initialData: AgentData = {
   commerce_max_product_cards: 5,
   commerce_include_out_of_stock: false,
   commerce_taxonomy_json: JSON.stringify(defaultCommerceTaxonomy, null, 2),
+  artifacts_config: {},
   api_data_source_enabled: false,
   api_data_source_name: '',
   api_data_source_url: '',
@@ -826,6 +828,7 @@ export default function AgentWizard() {
         commerce_max_product_cards: commerce.retrieval?.max_product_cards ?? commerce.retrieval?.max_cards ?? 4,
         commerce_include_out_of_stock: commerce.retrieval?.include_out_of_stock ?? false,
         commerce_taxonomy_json: structuredFieldToText(commerce.taxonomy, defaultCommerceTaxonomy),
+        artifacts_config: (config.artifacts && typeof config.artifacts === 'object') ? config.artifacts : {},
         api_data_source_enabled: apiDataSource.enabled ?? false,
         api_data_source_name: apiDataSource.name || '',
         api_data_source_url: apiDataSource.url || '',
@@ -1120,6 +1123,9 @@ export default function AgentWizard() {
             agent_profile_url: agentData.shopify_agent_profile_url,
           } : undefined,
           commerce: commerceConfig,
+          artifacts: (agentData.artifacts_config && Object.keys(agentData.artifacts_config).length)
+            ? agentData.artifacts_config
+            : existingConfiguration.artifacts,
           context_connectors: serializeContextConnectors(agentData.context_connectors),
           conversation_policy: {
             goal: agentData.conversation_policy_goal || agentData.purpose || agentData.description,
@@ -1347,6 +1353,7 @@ export default function AgentWizard() {
         },
         taxonomy: parseStructuredField(agentData.commerce_taxonomy_json, defaultCommerceTaxonomy),
       } : undefined,
+      artifacts: agentData.artifacts_config,
       skills: { selected: agentData.selected_skill_ids },
       tools: { selected: agentData.selected_tool_ids },
       agent_api: {

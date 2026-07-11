@@ -7,6 +7,7 @@ from .session import router as session_router
 from .observability import router as observability_router
 from .skills import router as skills_router
 from .tools import router as tools_router
+from .artifacts import router as artifacts_router
 from .agent_api_keys import router as agent_api_keys_router
 from .agent_manifests import router as agent_manifests_router
 from .console import router as console_router
@@ -23,6 +24,7 @@ router.include_router(session_router, prefix="/session", tags=["session"])
 router.include_router(observability_router, prefix="/observability", tags=["observability"])
 router.include_router(skills_router, prefix="/skills", tags=["skills"])
 router.include_router(tools_router, prefix="/tools", tags=["tools"])
+router.include_router(artifacts_router, prefix="/artifacts", tags=["artifacts"])
 router.include_router(agent_api_keys_router, prefix="/agent-api", tags=["agent-api-keys"])
 router.include_router(agent_manifests_router, prefix="/agents", tags=["agent-manifests"])
 router.include_router(console_router, prefix="/console", tags=["agent-console"])

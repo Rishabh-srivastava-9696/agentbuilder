@@ -48,6 +48,7 @@ from .commerce_config import is_commerce_agent_config, normalize_commerce_config
 from .observability_service import ObservabilityService
 from .prompt_assembler import PromptAssembler
 from .skill_registry import BuiltInSkillRegistry
+from .artifact_registry import is_artifact_enabled
 from .lalkitab_runtime import (
     build_lalkitab_runtime_context,
     extract_kundali_chart_summary,
@@ -1024,7 +1025,13 @@ Updated memory:"""
             else "- You may briefly describe the evidence used if it helps the user."
         )
         # Structured chart summary for the widget's visual kundali artifact.
-        kundali_chart = extract_kundali_chart_summary(api_context)
+        # Admin-configurable per agent (configuration.artifacts.kundali_chart);
+        # when disabled the reading falls back to the markdown chart table.
+        kundali_chart = (
+            extract_kundali_chart_summary(api_context)
+            if is_artifact_enabled(self.agent_config or {}, "kundali_chart")
+            else None
+        )
         if kundali_chart:
             normalized_birth = api_context.get("normalized_birth_input") or {}
             kundali_chart["birth"] = {

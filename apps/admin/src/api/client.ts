@@ -352,6 +352,17 @@ export interface SkillDefinition {
   [key: string]: any;
 }
 
+export interface ArtifactTypeDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  applies_to_templates?: string[];
+  default_enabled?: boolean;
+  options_schema?: Record<string, any>;
+  default_options?: Record<string, any>;
+  [key: string]: any;
+}
+
 export interface ToolDefinition {
   id: string;
   name: string;
@@ -646,6 +657,11 @@ export const adminCapabilitiesApi = {
       apiClient.get('/api/v1/admin/tools'),
       ['tools', 'items', 'data']
     ),
+  getArtifactTypes: () =>
+    optionalAdminList<ArtifactTypeDefinition>(
+      apiClient.get('/api/v1/admin/artifacts'),
+      ['artifacts', 'items', 'data']
+    ),
   getAgentApiKeys: (params?: AgentApiKeyListParams) =>
     optionalAdminList<AgentApiKey>(
       apiClient.get('/api/v1/admin/agent-api/keys', {
@@ -864,6 +880,7 @@ export const api = {
 
   getSkills: adminCapabilitiesApi.getSkills,
   getTools: adminCapabilitiesApi.getTools,
+  getArtifactTypes: adminCapabilitiesApi.getArtifactTypes,
   getAgentApiKeys: adminCapabilitiesApi.getAgentApiKeys,
   createAgentApiKey: adminCapabilitiesApi.createAgentApiKey,
   revokeAgentApiKey: adminCapabilitiesApi.revokeAgentApiKey,
