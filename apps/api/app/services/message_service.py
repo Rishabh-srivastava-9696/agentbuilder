@@ -12,6 +12,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, AsyncGenerator, Optional
 from datetime import datetime, timezone
+from urllib.parse import urlsplit, urlunsplit
 import structlog
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -47,7 +48,11 @@ from .commerce_config import is_commerce_agent_config, normalize_commerce_config
 from .observability_service import ObservabilityService
 from .prompt_assembler import PromptAssembler
 from .skill_registry import BuiltInSkillRegistry
-from .lalkitab_runtime import build_lalkitab_runtime_context
+from .lalkitab_runtime import (
+    build_lalkitab_runtime_context,
+    extract_kundali_chart_summary,
+    is_lalkitab_agent,
+)
 from .conversation_policy import (
     activity_stream_response_kwargs,
     normalize_conversation_policy,
@@ -148,6 +153,179 @@ def _normalize_commerce_product_currency(product: dict, agent_config: dict | Non
 
 def _normalize_commerce_products_currency(products: list[dict], agent_config: dict | None) -> list[dict]:
     return [_normalize_commerce_product_currency(product, agent_config) for product in products]
+
+
+def _base_product_url(url: Any) -> Optional[str]:
+    if url in (None, ""):
+        return None
+    try:
+        parts = urlsplit(str(url))
+        if not parts.scheme or not parts.netloc:
+            return re.sub(r"\?.*$", "", str(url)).rstrip("/")
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
+    except Exception:
+        return re.sub(r"\?.*$", "", str(url)).rstrip("/")
+
+
+def _commerce_product_group_key(product: dict) -> Optional[str]:
+    for key in ("product_group_id", "product_id", "handle"):
+        value = product.get(key)
+        if value not in (None, ""):
+            return f"{key}:{str(value).strip().lower()}"
+    base_url = _base_product_url(product.get("product_url") or product.get("url") or product.get("variant_url"))
+    if base_url:
+        return f"url:{base_url.lower()}"
+    return None
+
+
+def _commerce_variant_identity(product: dict) -> Optional[str]:
+    for key in ("variant_id", "variant_sku", "sku", "variant_url", "id"):
+        value = product.get(key)
+        if value not in (None, ""):
+            return re.sub(r"\s+", " ", str(value).strip().lower())
+    return None
+
+
+def _variant_rank(product: dict, default: int = 9999) -> int:
+    try:
+        return int(product.get("_variant_rank"))
+    except (TypeError, ValueError):
+        return default
+
+
+def _common_product_name(products: list[dict]) -> str:
+    parent_names = [str(product.get("parent_name")) for product in products if product.get("parent_name")]
+    if parent_names:
+        return parent_names[0]
+    names = [str(product.get("name") or product.get("title") or "") for product in products if product.get("name") or product.get("title")]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    prefix = names[0]
+    for name in names[1:]:
+        while prefix and not name.lower().startswith(prefix.lower()):
+            prefix = prefix[:-1]
+    return re.sub(r"[\s\-–—/]+$", "", prefix).strip() or names[0]
+
+
+def _variant_label(product: dict, parent_name: str) -> str:
+    explicit = product.get("variant_title")
+    if explicit not in (None, "", "Default Title"):
+        return str(explicit)
+    name = str(product.get("name") or product.get("title") or "")
+    if parent_name and name.lower().startswith(parent_name.lower()):
+        suffix = re.sub(r"^[\s\-–—/]+", "", name[len(parent_name):]).strip()
+        if suffix:
+            return suffix
+    return str(product.get("variant_sku") or product.get("sku") or product.get("variant_id") or "Variant")
+
+
+def _commerce_variant_from_product(product: dict, selected: dict, parent_name: str) -> dict:
+    variant_options = product.get("variant_options")
+    if not isinstance(variant_options, dict) or not variant_options:
+        variant_options = {"Variant": _variant_label(product, parent_name)}
+    return {
+        "id": product.get("variant_id") or product.get("id") or product.get("sku"),
+        "variant_id": product.get("variant_id") or product.get("id") or product.get("sku"),
+        "sku": product.get("variant_sku") or product.get("sku"),
+        "variant_sku": product.get("variant_sku") or product.get("sku"),
+        "name": product.get("name"),
+        "title": product.get("variant_title") or _variant_label(product, parent_name),
+        "variant_title": product.get("variant_title") or _variant_label(product, parent_name),
+        "variant_options": variant_options,
+        "price": product.get("price"),
+        "currency": product.get("currency"),
+        "currency_source": product.get("currency_source"),
+        "image_url": product.get("image_url") or product.get("image"),
+        "image": product.get("image") or product.get("image_url"),
+        "product_url": product.get("product_url") or product.get("url"),
+        "variant_url": product.get("variant_url") or product.get("product_url") or product.get("url"),
+        "in_stock": product.get("in_stock", True),
+        "is_default": _commerce_variant_identity(product) == _commerce_variant_identity(selected),
+    }
+
+
+def _group_commerce_products_for_cards(products: list[dict]) -> list[dict]:
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    passthrough: list[dict] = []
+    for index, product in enumerate(products):
+        if not isinstance(product, dict):
+            continue
+        variants = product.get("variants")
+        if isinstance(variants, list) and len(variants) > 1:
+            passthrough.append(product)
+            continue
+        group_key = _commerce_product_group_key(product)
+        if not group_key:
+            passthrough.append(product)
+            continue
+        product_copy = dict(product)
+        product_copy["_variant_rank"] = index
+        if group_key not in groups:
+            groups[group_key] = []
+            order.append(group_key)
+        groups[group_key].append(product_copy)
+
+    grouped_products: list[dict] = []
+    for group_key in order:
+        group_products = groups[group_key]
+        if len(group_products) == 1:
+            product = dict(group_products[0])
+            product.pop("_variant_rank", None)
+            grouped_products.append(product)
+            continue
+
+        group_products = _deduplicate_entities(
+            group_products,
+            "variant_id",
+            "variant_sku",
+            "sku",
+            "variant_url",
+            "id",
+        )
+        selected = min(
+            group_products,
+            key=lambda product: (
+                _variant_rank(product),
+                0 if product.get("in_stock", True) else 1,
+                float(product.get("price") or 10**18),
+            ),
+        )
+        group_products = sorted(
+            group_products,
+            key=lambda product: (
+                0 if _commerce_variant_identity(product) == _commerce_variant_identity(selected) else 1,
+                _variant_rank(product),
+                0 if product.get("in_stock", True) else 1,
+                float(product.get("price") or 10**18),
+                _commerce_variant_identity(product) or "",
+            ),
+        )
+        parent_name = _common_product_name(group_products)
+        variants = [_commerce_variant_from_product(product, selected, parent_name) for product in group_products]
+        prices = [float(variant["price"]) for variant in variants if variant.get("price") not in (None, "")]
+        card = dict(selected)
+        card["product_group_id"] = selected.get("product_group_id") or group_key
+        card["name"] = parent_name or selected.get("name") or selected.get("title") or "Product"
+        card["title"] = card["name"]
+        card["has_variants"] = True
+        card["variant_count"] = max(int(selected.get("variant_count") or 0), len(variants))
+        card["variants"] = variants
+        card["default_variant_id"] = selected.get("variant_id") or selected.get("id") or selected.get("sku")
+        if prices:
+            card["price_min"] = min(prices)
+            card["price_max"] = max(prices)
+        card.pop("_variant_rank", None)
+        grouped_products.append(card)
+
+    return [*grouped_products, *passthrough]
+
+
+def _prepare_commerce_products_for_response(products: list[dict], agent_config: dict | None) -> list[dict]:
+    normalized = _normalize_commerce_products_currency(products, agent_config)
+    return _group_commerce_products_for_cards(normalized)
 
 
 def _extract_tool_result_metadata(tool_results: dict) -> tuple[list[dict], list[dict], list[dict]]:
@@ -597,6 +775,56 @@ class MessageService:
             normalized["datetime"] = f"{normalized['date']}T{normalized['time']}"
         return {"normalized_birth_input": normalized} if normalized else {}
 
+    _LALKITAB_COORD_FIELD_IDS = {"latitude", "longitude", "timezone", "lat", "lon", "lng", "long", "coordinates"}
+
+    def _adapt_turn_plan_for_lalkitab(self, turn_plan: AgentTurnPlan) -> AgentTurnPlan:
+        """Keep Lal Kitab turns on the chart-first runtime.
+
+        - Planner tool plans would call Vedika endpoints directly and skip
+          geocoding + chart-first ordering, so they are dropped in favour of
+          the dedicated runtime (this is what previously caused the agent to
+          ask users for latitude/longitude).
+        - Coordinates/timezone are derived automatically from the birthplace,
+          so a turn must never block asking the user for them.
+        - Once the birth details are complete, the kundali chart is built and
+          shown right away instead of first asking "what would you like to
+          ask?" — the chart does not depend on the question.
+        """
+        if not is_lalkitab_agent(self.agent_config or {}):
+            return turn_plan
+        if turn_plan.tool_plan:
+            turn_plan.tool_plan = []
+            turn_plan.context_decision = {
+                **(turn_plan.context_decision or {}),
+                "use_connectors": True,
+                "reason": "lalkitab_chart_first_runtime",
+            }
+        if turn_plan.missing_inputs or turn_plan.pending_inputs:
+            kept = [
+                item
+                for item in (turn_plan.missing_inputs or turn_plan.pending_inputs or [])
+                if str(item.get("id", "")).lower() not in self._LALKITAB_COORD_FIELD_IDS
+            ]
+            if len(kept) != len(turn_plan.missing_inputs or turn_plan.pending_inputs or []):
+                turn_plan.missing_inputs = kept
+                turn_plan.pending_inputs = kept
+                if not kept and turn_plan.action == "ask_missing_input":
+                    turn_plan.action = "ready"
+                    turn_plan.intent = "answer"
+                    turn_plan.public_response = None
+                    turn_plan.response_text = ""
+        if turn_plan.action == "ask_question":
+            turn_plan.action = "ready"
+            turn_plan.intent = "answer"
+            turn_plan.public_response = None
+            turn_plan.response_text = ""
+            turn_plan.context_decision = {
+                **(turn_plan.context_decision or {}),
+                "use_connectors": True,
+                "reason": "birth_details_complete_build_chart_first",
+            }
+        return turn_plan
+
     def _apply_remembered_connector_inputs(self, remembered_inputs: dict) -> None:
         """Push conversation-remembered inputs onto registered connector tools so
         follow-up tool calls auto-fill required fields (universal: any connector)."""
@@ -795,10 +1023,31 @@ Updated memory:"""
             if hide_internal_sources
             else "- You may briefly describe the evidence used if it helps the user."
         )
+        # Structured chart summary for the widget's visual kundali artifact.
+        kundali_chart = extract_kundali_chart_summary(api_context)
+        if kundali_chart:
+            normalized_birth = api_context.get("normalized_birth_input") or {}
+            kundali_chart["birth"] = {
+                "date": normalized_birth.get("date"),
+                "time": normalized_birth.get("time"),
+                "place": normalized_birth.get("birth_place_resolved") or normalized_birth.get("birth_place"),
+            }
+        chart_step = (
+            "2. The kundali chart itself is rendered as a visual diagram by the app alongside\n"
+            "   your reply — do NOT print a chart table, ASCII chart, or house-by-house grid.\n"
+            "   Go straight from the birth-details line to the walkthrough."
+            if kundali_chart
+            else
+            "2. **The Lal Kitab kundali chart** — a markdown table with columns\n"
+            "   House | Rashi | Planets, listing all 12 houses in order, built ONLY from the\n"
+            "   calculated chart context. Write \"—\" for empty houses. Never guess a placement."
+        )
         prompt = f"""
 {self.system_prompt}
 
-You are answering a Lal Kitab / Vedic Jyotish question for the user.
+You are answering a Lal Kitab / Vedic Jyotish question for the user, in the voice of a
+warm, seasoned Lal Kitab astrologer sitting across the table — human, direct, a little
+affectionate ("beta", "child"), never clinical or system-like.
 
 Rules:
 - Use the calculated context internally for chart/calculation facts.
@@ -809,6 +1058,31 @@ Rules:
 - Speak like a human advisor helping the user, not like a system explaining its architecture.
 {source_rule}
 - Do not claim certainty beyond the provided sources.
+- Reply in the language the user is writing in (Hindi, Hinglish, or English); use both
+  English and Hindi names for rashis and planets (e.g. "Pisces (Meen)", "Shani (Saturn)").
+
+Answer format — follow this order strictly (the kundali chart always comes FIRST,
+before any interpretation, prediction, or remedy):
+
+1. One-line confirmation of the birth details used: date, time, place (and the lagna/
+   ascendant if the calculated context provides it).
+{chart_step}
+3. **Where the planets sit** — short, warm notes for each occupied house (what that
+   house governs and what the placement means), like an astrologer walking through
+   the chart aloud.
+4. **The real matter** — directly address the user's question using the chart and any
+   prediction/houses/debts evidence. Name the strengths first, then the weak spot,
+   plainly and kindly.
+5. **Lal Kitab remedies** — a short numbered list, only from remedy/totke evidence;
+   practical conduct corrections, not just rituals.
+6. **The final word** — two or three encouraging closing lines in the same voice.
+7. A small **Confidence** table (Area | Confidence | Why) for the life areas touched
+   by the question, honestly graded from the strength of the evidence.
+8. End with one line: Lal Kitab reading is a guidance tradition, not a guarantee —
+   conduct, effort and discipline are themselves the biggest remedy.
+
+If the user has NOT asked a specific question yet, stop after steps 1-3 plus a brief
+overall reading, then warmly invite their question (career, marriage, foreign, health…).
 
 User Query:
 {message}
@@ -836,6 +1110,7 @@ Answer the user directly.
                 "validation_passed": True,
                 "validation_confidence": 0.92,
                 "lalkitab_runtime": True,
+                "kundali_chart": _sanitize_for_json(kundali_chart) if kundali_chart else None,
                 "api_context": {
                     "normalized_birth_input": api_context.get("normalized_birth_input"),
                     "chart_available": bool(api_context.get("chart_context")),
@@ -1707,6 +1982,7 @@ Rules:
                 system_prompt=self.system_prompt or "",
                 fallback_plan=fallback_turn_plan,
             )
+            turn_plan = self._adapt_turn_plan_for_lalkitab(turn_plan)
 
             if turn_plan.should_short_circuit:
                 response_text = turn_plan.response_text
@@ -1825,11 +2101,78 @@ Rules:
             if is_commerce_agent_config(self.agent_config or {}):
                 context_dict["commerce"] = (self.agent_config or {}).get("commerce") or {}
 
+            # Chart-first Lal Kitab runtime (mirrors the streaming path): parse
+            # birth details, geocode the birthplace automatically, build the
+            # chart first, then call only the relevant secondary endpoints.
+            agent_result = None
+            lalkitab_pending: dict[str, Any] = {}
+            lalkitab_plan = SimpleNamespace(handled=False, api_context=None)
+            if not turn_plan.tool_plan:
+                lalkitab_pending = (
+                    await self._load_lalkitab_pending_state(conversation_id)
+                    if short_term_enabled else {}
+                )
+                lalkitab_pending = {
+                    **lalkitab_pending,
+                    **self._lalkitab_pending_from_policy(policy_state, turn_plan),
+                }
+                lalkitab_plan = await build_lalkitab_runtime_context(
+                    self.agent_config or {}, runtime_message, pending_state=lalkitab_pending
+                )
+
+            if lalkitab_plan.handled and (
+                getattr(lalkitab_plan, "awaiting_place_choice", False) or lalkitab_plan.missing_input
+            ):
+                clarification = lalkitab_plan.clarification
+                if short_term_enabled:
+                    await self.short_term.add_message(
+                        conversation_id=conversation_id,
+                        role=MessageRole.ASSISTANT,
+                        content=clarification,
+                        metadata={"user_id": user_id, "lalkitab_pending": lalkitab_plan.pending_state},
+                    )
+                self.strapi.sync_conversation(
+                    conversation_id=conversation_id,
+                    user_message=request.message,
+                    assistant_message=clarification,
+                    brand_slug=self.brand_id,
+                    agent_id=agent_id,
+                )
+                duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+                return MessageResponse(
+                    message=clarification,
+                    conversation_id=conversation_id,
+                    citations=[],
+                    context_used=0,
+                    confidence_score=1.0,
+                    processing_time_ms=duration_ms,
+                )
+
+            if lalkitab_plan.handled:
+                cached_rag_context = (
+                    lalkitab_pending.get("rag_context")
+                    if isinstance(lalkitab_pending.get("rag_context"), dict)
+                    else {}
+                )
+                if getattr(lalkitab_plan, "used_cached_context", False) and cached_rag_context:
+                    rag_context, rag_tool_result = cached_rag_context, None
+                else:
+                    rag_context, rag_tool_result = await self._retrieve_lalkitab_rag_context(runtime_message, request)
+                agent_result = await self._generate_lalkitab_agent_result(
+                    message=runtime_message,
+                    chat_history=chat_history,
+                    lalkitab_plan=lalkitab_plan,
+                    rag_context=rag_context,
+                    rag_tool_result=rag_tool_result,
+                )
+
             # 4. RUN SOTA ORCHESTRATOR LOOP
             # Instead of linear retrieve->generate, let the agent plan and execute.
             from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
 
-            if turn_plan.tool_plan:
+            if agent_result is not None:
+                pass
+            elif turn_plan.tool_plan:
                 planner_tool_results, _ = await self._execute_planner_tool_plan(
                     turn_plan=turn_plan,
                     message=runtime_message,
@@ -1887,9 +2230,10 @@ Rules:
             is_commerce_agent = is_commerce_agent_config(self.agent_config or {})
             if is_commerce_agent:
                 citations = []
-                safe_products = _normalize_commerce_products_currency(safe_products, self.agent_config or {})
+                safe_products = _prepare_commerce_products_for_response(safe_products, self.agent_config or {})
             unique_products = _deduplicate_entities(
                 safe_products,
+                "product_group_id",
                 "id",
                 "sku",
                 "product_id",
@@ -1918,6 +2262,11 @@ Rules:
                 "rerank_results": _sanitize_for_json(agent_metadata.get("rerank_results") or []),
                 "resolved_reference": _sanitize_for_json(agent_metadata.get("resolved_reference") or {}),
             } if is_commerce_agent or unique_products or unique_dealers else None
+            if agent_metadata.get("kundali_chart"):
+                response_metadata = {
+                    **(response_metadata or {}),
+                    "kundali_chart": _sanitize_for_json(agent_metadata["kundali_chart"]),
+                }
             strapi_assistant_metadata = {
                 "products": unique_products,
                 "dealers": unique_dealers,
@@ -1957,6 +2306,13 @@ Rules:
                         "resolved_inputs": _sanitize_for_json(turn_plan.resolved_inputs),
                         "pending_inputs": turn_plan.pending_inputs,
                         "context_decision": turn_plan.context_decision,
+                        "cached_evidence": _sanitize_for_json({
+                            "api_context": agent_metadata.get("lalkitab_api_context_full"),
+                            "rag_context": agent_metadata.get("lalkitab_rag_context_full"),
+                        }) if agent_metadata.get("lalkitab_runtime") else None,
+                        "lalkitab_api_context": agent_metadata.get("lalkitab_api_context_full"),
+                        "lalkitab_rag_context": agent_metadata.get("lalkitab_rag_context_full"),
+                        "connector_inputs": self._collect_connector_inputs(session_state, lalkitab_plan, agent_metadata) or None,
                     }
                 )
 
@@ -2179,6 +2535,7 @@ Rules:
                 system_prompt=self.system_prompt or "",
                 fallback_plan=fallback_turn_plan,
             )
+            turn_plan = self._adapt_turn_plan_for_lalkitab(turn_plan)
             for activity in turn_plan.activities:
                 if activity.get("visibility") != "hidden":
                     yield StreamingMessageResponse(**activity_stream_response_kwargs(activity, conversation_id))
@@ -2594,7 +2951,7 @@ Rules:
                     continue
                 products = [_sanitize_for_json(product) for product in (tool_metadata.get("products") or [])]
                 if is_commerce_agent:
-                    products = _normalize_commerce_products_currency(products, self.agent_config or {})
+                    products = _prepare_commerce_products_for_response(products, self.agent_config or {})
                 dealers = [_sanitize_for_json(dealer) for dealer in (tool_metadata.get("dealers") or [])]
                 sources = [] if is_commerce_agent else (tool_metadata.get("sources") or [])
                 summary_parts = []
@@ -2680,16 +3037,21 @@ Rules:
                     conversation_id=conversation_id,
                 )
 
+            final_answer_metadata = {
+                "context_used": len(tool_results),
+                "validation_confidence": agent_metadata.get("validation_confidence"),
+                "api_context": _sanitize_for_json(agent_metadata.get("api_context") or {}),
+                "rag_context": _sanitize_for_json(agent_metadata.get("rag_context") or {}),
+            }
+            if agent_metadata.get("kundali_chart"):
+                # Structured chart payload the widget renders as the visual
+                # kundali artifact above the reading.
+                final_answer_metadata["kundali_chart"] = _sanitize_for_json(agent_metadata["kundali_chart"])
             yield StreamingMessageResponse(
                 type="final_answer",
                 content=full_response,
                 conversation_id=conversation_id,
-                metadata={
-                    "context_used": len(tool_results),
-                    "validation_confidence": agent_metadata.get("validation_confidence"),
-                    "api_context": _sanitize_for_json(agent_metadata.get("api_context") or {}),
-                    "rag_context": _sanitize_for_json(agent_metadata.get("rag_context") or {}),
-                },
+                metadata=final_answer_metadata,
             )
 
             # Phase 4: Validate streaming response
@@ -2763,9 +3125,10 @@ Rules:
             # Sync to Strapi dashboard (fire-and-forget — never blocks streaming)
             _, stream_products, stream_dealers = _extract_tool_result_metadata(tool_results)
             if is_commerce_agent_config(self.agent_config or {}):
-                stream_products = _normalize_commerce_products_currency(stream_products, self.agent_config or {})
+                stream_products = _prepare_commerce_products_for_response(stream_products, self.agent_config or {})
             strapi_products = _deduplicate_entities(
                 stream_products,
+                "product_group_id",
                 "id",
                 "sku",
                 "product_id",
@@ -2828,10 +3191,11 @@ Rules:
             citations, safe_products, safe_dealers = _extract_tool_result_metadata(tool_results)
             if is_commerce_agent_config(self.agent_config or {}):
                 citations = []
-                safe_products = _normalize_commerce_products_currency(safe_products, self.agent_config or {})
+                safe_products = _prepare_commerce_products_for_response(safe_products, self.agent_config or {})
 
             unique_products = _deduplicate_entities(
                 safe_products,
+                "product_group_id",
                 "id",
                 "sku",
                 "product_id",

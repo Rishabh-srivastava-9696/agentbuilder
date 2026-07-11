@@ -1,9 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import MarkdownIt from 'markdown-it';
 import { ThumbsUp, ThumbsDown, Copy, RotateCcw } from 'lucide-react';
-import type { Message } from '../types';
+import type { Message, ProductData, KundaliChartData } from '../types';
 import { ProductCard } from './ProductCard';
 import { DealerCard } from './DealerCard';
+import { KundaliChart } from './KundaliChart';
 import { DEFAULT_API_BASE_URL } from '../utils/apiClient';
 
 interface MessageBubbleProps {
@@ -16,18 +17,6 @@ interface MessageBubbleProps {
   onRegenerate?: (id: string) => void;
   showSources?: boolean;
   showProductCards?: boolean;
-}
-
-interface Product {
-  sku?: string;
-  name: string;
-  price: number;
-  currency: string;
-  category: string;
-  in_stock: boolean;
-  features?: string[];
-  image_url?: string;
-  product_url?: string;
 }
 
 // Initialize markdown-it instance
@@ -69,8 +58,8 @@ const parseProductInfo = (content: string): { cleanContent: string; productSkus:
   return { cleanContent, productSkus };
 };
 
-const getProductKey = (product: Partial<Product>): string =>
-  product.sku || (product as { product_id?: string }).product_id || (product as { id?: string }).id || product.name || JSON.stringify(product);
+const getProductKey = (product: Partial<ProductData>): string =>
+  product.product_group_id || product.product_url || product.sku || (product as { product_id?: string }).product_id || product.id || product.name || JSON.stringify(product);
 
 const getUrlHost = (url?: string): string => {
   if (!url) {
@@ -111,7 +100,7 @@ const formatProductPrice = (price?: number, currency?: string): string => {
 };
 
 // Fetch product details from API
-const fetchProductDetails = async (skus: string[], agentId: string): Promise<Product[]> => {
+const fetchProductDetails = async (skus: string[], agentId: string): Promise<ProductData[]> => {
   try {
     console.log('[MessageBubble] Fetching products for SKUs:', skus, 'agentId:', agentId);
     const response = await fetch(`${DEFAULT_API_BASE_URL}/api/v1/knowledge/products/by-skus`, {
@@ -152,7 +141,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   showProductCards = true,
 }) => {
   const isUser = message.role === 'user';
-  const [extractedProducts, setExtractedProducts] = useState<Product[]>([]);
+  const [extractedProducts, setExtractedProducts] = useState<ProductData[]>([]);
   const [isHovered, setIsHovered] = useState(false);
   
   // Parse product info tags and fetch product details
@@ -189,6 +178,13 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     return md.render(cleanContent);
   }, [message.content, isUser]);
   
+  // Structured kundali chart calculated by the backend (Lal Kitab agents).
+  const kundaliChart = useMemo(() => {
+    if (isUser) return null;
+    const data = message.metadata?.kundali_chart as KundaliChartData | undefined;
+    return data && Array.isArray(data.houses) && data.houses.length ? data : null;
+  }, [message.metadata, isUser]);
+
   // Combine products from message metadata and extracted from tags
   const allProducts = useMemo(() => {
     const products = [...(message.products || []), ...extractedProducts];
@@ -244,11 +240,14 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           : { background: assistantMsgBg, color: assistantMsgColor }
         }
       >
+        {/* Lal Kitab kundali — visual chart artifact, always ahead of the reading */}
+        {!isUser && kundaliChart && <KundaliChart data={kundaliChart} />}
+
         {isUser ? (
           <p className="message-text">{message.content}</p>
         ) : (
-          <div 
-            className="message-text markdown-content" 
+          <div
+            className="message-text markdown-content"
             dangerouslySetInnerHTML={{ __html: renderedContent }}
           />
         )}

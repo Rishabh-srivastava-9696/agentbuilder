@@ -185,6 +185,17 @@ Rules:
 - If the agent has enough information and tools are needed, set intent=tool_use with a tool_plan.
 - For ordered recipes, include the prerequisite step first.
 - If a place/date/time is phrased naturally or unlabeled, still extract it.
+- Unlabeled comma/period-separated birth details (e.g. "16 July 1987, 15:26, Delhi India")
+  mean birth_date, birth_time, birth_place — extract all three (date as YYYY-MM-DD,
+  time as HH:MM:SS, place as the text the user gave).
+- Never ask the user for latitude, longitude, or timezone. A birthplace name is enough;
+  the runtime geocodes it automatically. Ask a clarifying question only when a detail is
+  genuinely ambiguous (e.g. "03/04/1990" could be 3 April or 4 March, or a city name that
+  exists in several countries with no country given) — otherwise proceed.
+- Never put astrology connector endpoints (lalkitab_* or geocode_*) in tool_plan; the
+  chart-first astrology runtime resolves the birthplace, builds the chart first, and then
+  calls the relevant secondary endpoints automatically. Signal the need through
+  context_decision.use_connectors=true instead.
 - Public response must not mention API, RAG, chunks, connectors, endpoint names, tool calls, or runtime internals unless policy allows it.
 """
 

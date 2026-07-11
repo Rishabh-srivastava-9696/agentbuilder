@@ -46,6 +46,200 @@ GEOCODE_SEARCH_ENDPOINT = "geocode_search"
 GEOCODE_RESOLVE_ENDPOINT = "geocode_resolve"
 
 
+# ── Kundali chart summary (for the visual chart widget) ──────────────────────
+
+KUNDALI_RASHIS = [
+    ("Aries", "Mesh"),
+    ("Taurus", "Vrishabh"),
+    ("Gemini", "Mithun"),
+    ("Cancer", "Kark"),
+    ("Leo", "Simha"),
+    ("Virgo", "Kanya"),
+    ("Libra", "Tula"),
+    ("Scorpio", "Vrishchik"),
+    ("Sagittarius", "Dhanu"),
+    ("Capricorn", "Makar"),
+    ("Aquarius", "Kumbh"),
+    ("Pisces", "Meen"),
+]
+
+# Full English + Sanskrit planet names only — short aliases would false-match
+# arbitrary keys while scanning an unknown API response shape.
+KUNDALI_PLANET_CODES = {
+    "sun": "Su", "surya": "Su",
+    "moon": "Mo", "chandra": "Mo",
+    "mars": "Ma", "mangal": "Ma",
+    "mercury": "Me", "budh": "Me", "budha": "Me",
+    "jupiter": "Ju", "guru": "Ju", "brihaspati": "Ju",
+    "venus": "Ve", "shukra": "Ve",
+    "saturn": "Sa", "shani": "Sa",
+    "rahu": "Ra",
+    "ketu": "Ke",
+}
+
+KUNDALI_PLANET_ORDER = ["Su", "Mo", "Ma", "Me", "Ju", "Ve", "Sa", "Ra", "Ke"]
+
+_KUNDALI_HOUSE_KEYS = ("house", "house_number", "house_no", "bhava", "bhav", "which_house", "house_id")
+_KUNDALI_SIGN_KEYS = (
+    "sign", "rashi", "zodiac", "sign_name", "rashi_name", "zodiac_sign",
+    "sign_number", "rashi_number", "sign_id", "rashi_id",
+)
+_KUNDALI_ASC_KEYS = ("ascendant", "lagna", "asc", "lagna_sign", "ascendant_sign", "lagna_rashi")
+
+
+def _kundali_parse_sign(value: Any, _depth: int = 0) -> int | None:
+    """Parse a rashi as 1..12 from a number, an English/Hindi name, or a nested dict."""
+    if isinstance(value, bool) or value is None or _depth > 2:
+        return None
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number if 1 <= number <= 12 else None
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text.isdigit():
+            number = int(text)
+            return number if 1 <= number <= 12 else None
+        for index, (english, hindi) in enumerate(KUNDALI_RASHIS):
+            if text.startswith(english.lower()) or text.startswith(hindi.lower()):
+                return index + 1
+        return None
+    if isinstance(value, dict):
+        for key in ("name", "sign", "rashi", "sign_number", "number", "id"):
+            parsed = _kundali_parse_sign(value.get(key), _depth + 1)
+            if parsed:
+                return parsed
+    return None
+
+
+def _kundali_parse_house(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number if 1 <= number <= 12 else None
+    if isinstance(value, str):
+        match = re.match(r"\s*(\d{1,2})\s*(?:st|nd|rd|th)?\b", value.strip().lower())
+        if match:
+            number = int(match.group(1))
+            return number if 1 <= number <= 12 else None
+    return None
+
+
+def _kundali_first(parser, node: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        if key in node:
+            parsed = parser(node[key])
+            if parsed:
+                return parsed
+    return None
+
+
+def _kundali_walk(node: Any, found: dict[str, dict[str, int]], asc_holder: dict[str, Any]) -> None:
+    """Recursively scan an arbitrary chart payload for planet→house/sign facts.
+
+    Shape-agnostic on purpose: the Vedika response format is treated as opaque,
+    so this recognises both `{"planets": [{"name": "Sun", "house": 11}]}` and
+    `{"Sun": {"sign": "Capricorn"}}` style structures, plus any ascendant/lagna
+    marker at any depth.
+    """
+    if isinstance(node, dict):
+        if asc_holder.get("sign") is None:
+            for key in _KUNDALI_ASC_KEYS:
+                if key in node:
+                    parsed = _kundali_parse_sign(node[key])
+                    if parsed:
+                        asc_holder["sign"] = parsed
+                        break
+        name_value = None
+        for name_key in ("name", "planet", "planet_name", "graha"):
+            if isinstance(node.get(name_key), str):
+                name_value = node[name_key]
+                break
+        code = KUNDALI_PLANET_CODES.get(str(name_value).strip().lower()) if name_value else None
+        if code:
+            entry = found.setdefault(code, {})
+            house = _kundali_first(_kundali_parse_house, node, _KUNDALI_HOUSE_KEYS)
+            sign = _kundali_first(_kundali_parse_sign, node, _KUNDALI_SIGN_KEYS)
+            if house and "house" not in entry:
+                entry["house"] = house
+            if sign and "sign" not in entry:
+                entry["sign"] = sign
+        for key, value in node.items():
+            key_code = KUNDALI_PLANET_CODES.get(str(key).strip().lower())
+            if key_code and isinstance(value, dict):
+                entry = found.setdefault(key_code, {})
+                house = _kundali_first(_kundali_parse_house, value, _KUNDALI_HOUSE_KEYS)
+                sign = _kundali_first(_kundali_parse_sign, value, _KUNDALI_SIGN_KEYS)
+                if house and "house" not in entry:
+                    entry["house"] = house
+                if sign and "sign" not in entry:
+                    entry["sign"] = sign
+            _kundali_walk(value, found, asc_holder)
+    elif isinstance(node, list):
+        for item in node:
+            _kundali_walk(item, found, asc_holder)
+
+
+def extract_kundali_chart_summary(api_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Derive a render-ready kundali summary from the calculated chart context.
+
+    Returns {"style", "ascendant", "houses": [{house, sign_number, rashi,
+    rashi_hindi, planets}]} or None when no placements can be derived. Used by
+    the widget to draw the visual North-Indian chart, so it must never guess:
+    missing facts stay None/empty.
+    """
+    if not isinstance(api_context, dict):
+        return None
+    chart = api_context.get("chart_context")
+    if not isinstance(chart, (dict, list)):
+        return None
+    found: dict[str, dict[str, int]] = {}
+    asc_holder: dict[str, Any] = {"sign": None}
+    _kundali_walk(chart, found, asc_holder)
+    if not found:
+        return None
+
+    asc_sign = asc_holder.get("sign")
+    # If the ascendant was not labelled but some planet has both house and
+    # sign, the lagna rashi follows arithmetically.
+    if not asc_sign:
+        for entry in found.values():
+            if entry.get("house") and entry.get("sign"):
+                asc_sign = (entry["sign"] - entry["house"]) % 12 + 1
+                break
+
+    placements: dict[int, list[str]] = {}
+    for code, entry in found.items():
+        house = entry.get("house")
+        if house is None and asc_sign and entry.get("sign"):
+            house = (entry["sign"] - asc_sign) % 12 + 1
+        if house:
+            placements.setdefault(house, []).append(code)
+    if not placements:
+        return None
+
+    houses = []
+    for house_number in range(1, 13):
+        sign_number = ((asc_sign - 1 + house_number - 1) % 12 + 1) if asc_sign else None
+        houses.append(
+            {
+                "house": house_number,
+                "sign_number": sign_number,
+                "rashi": KUNDALI_RASHIS[sign_number - 1][0] if sign_number else None,
+                "rashi_hindi": KUNDALI_RASHIS[sign_number - 1][1] if sign_number else None,
+                "planets": sorted(placements.get(house_number, []), key=KUNDALI_PLANET_ORDER.index),
+            }
+        )
+    ascendant = None
+    if asc_sign:
+        ascendant = {
+            "sign_number": asc_sign,
+            "name": KUNDALI_RASHIS[asc_sign - 1][0],
+            "hindi": KUNDALI_RASHIS[asc_sign - 1][1],
+        }
+    return {"style": "north_indian", "ascendant": ascendant, "houses": houses}
+
+
 @dataclass
 class LalKitabPlanResult:
     handled: bool = False
@@ -224,6 +418,16 @@ def _clean_birth_place(value: str) -> str:
         flags=re.IGNORECASE,
     )[0]
     cleaned = re.sub(r"\b(?:born|birthplace)\b", " ", cleaned, flags=re.IGNORECASE)
+    # Drop time/preposition fragments that ride along with an unlabeled place
+    # ("1526 hrs time. delhi" → "delhi", "at in mumbai" → "mumbai").
+    cleaned = re.sub(r"\b(?:hrs?|hours?|ist|india\s+timezone)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip(" .,-")
+    cleaned = re.sub(
+        r"^(?:(?:time|at|in|on|around|near)\b[\s.,-]*)+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"\s+", " ", cleaned)
     cleaned = cleaned.strip(" .,-")
     return cleaned
@@ -266,6 +470,69 @@ def _looks_like_question_or_intent(text: str) -> bool:
             lowered,
         )
     )
+
+
+_MONTHS_PATTERN = (
+    r"(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|"
+    r"aug|august|sep|sept|september|oct|october|nov|november|dec|december)"
+)
+
+
+def _infer_unlabeled_place(text: str) -> str | None:
+    """Infer an unlabeled birthplace from free-form input.
+
+    Handles natural phrasing such as "16 July 1987, 15:26, Delhi India" where
+    the user never writes "place:" or "born in". This is generic scrubbing of
+    date/time/label fragments — no city lists or keyword hardcoding.
+    """
+    # 1) Prefer the free-text fragment that follows the birth time.
+    after_time = re.search(
+        r"(?:\b\d{3,4}\s*(?:hrs|hours?|ist|india(?:n)?\s+timezone)?\b|"
+        r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b)"
+        r"\s*(?:[,.)-]|\btime\b)?\s*([A-Za-z][A-Za-z\s,.-]{1,120})",
+        text,
+        re.IGNORECASE,
+    )
+    if after_time:
+        place = _clean_birth_place(after_time.group(1))
+        if place and not _looks_like_question_or_intent(place):
+            return place
+    # 2) Otherwise scrub date/time/label fragments and keep the trailing
+    #    location-like free-text fragment (names tend to come first).
+    scrubbed = re.sub(r"\b\d{4}-\d{1,2}-\d{1,2}\b", " ", text)
+    scrubbed = re.sub(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", " ", scrubbed)
+    scrubbed = re.sub(
+        rf"\b\d{{1,2}}\s*{_MONTHS_PATTERN}\s+\d{{4}}\b|\b{_MONTHS_PATTERN}\s+\d{{1,2}}\s+\d{{4}}\b",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    scrubbed = re.sub(
+        r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b|\b\d{3,4}\s*(?:hrs|hours?|ist)?\b",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    scrubbed = re.sub(
+        r"\b(?:name|dob|tob|pob|date|time|birth|of|place|question|query|ist|india timezone)\b\s*[:=-]?",
+        " ",
+        scrubbed,
+        flags=re.IGNORECASE,
+    )
+    parts = []
+    for part in re.split(r"[.;\n]+", scrubbed):
+        cleaned = _clean_birth_place(part)
+        if cleaned and not _looks_like_question_or_intent(cleaned) and not re.search(r"\d", cleaned):
+            parts.append(cleaned)
+    return parts[-1] if parts else None
+
+
+def message_contains_birth_details(message: str) -> bool:
+    """True when the message itself reads like birth details (date plus a time
+    or place), even without any astrology keyword — e.g. a bare
+    "16 July 1987, 15:26, Delhi India" reply."""
+    extracted, _ = extract_lalkitab_birth_input(message, resolve_known_places=False)
+    return bool(extracted.get("date") and (extracted.get("time") or extracted.get("birth_place")))
 
 
 def extract_lalkitab_birth_input(
@@ -348,6 +615,13 @@ def extract_lalkitab_birth_input(
         birth_place = _clean_birth_place(place_match.group(1))
         parts = [part.strip() for part in re.split(r"[.;\n]+", birth_place) if part.strip()]
         normalized["birth_place"] = parts[-1] if parts else birth_place
+    elif normalized.get("date"):
+        # No labelled place, but the message carries birth details — infer the
+        # unlabeled place ("16 July 1987, 15:26, Delhi India").
+        inferred_place = _infer_unlabeled_place(text)
+        if inferred_place:
+            normalized["birth_place"] = inferred_place
+    if normalized.get("birth_place"):
         resolved_place = _resolve_place(normalized["birth_place"]) if resolve_known_places else None
         if resolved_place:
             normalized.setdefault("latitude", resolved_place["latitude"])
@@ -366,12 +640,14 @@ def extract_lalkitab_birth_input(
 
 
 def format_lalkitab_missing_input_clarification(normalized: dict[str, Any], missing: list[str]) -> str:
+    # Coordinates and timezone are derived automatically from the birthplace,
+    # so the user is only ever asked for the place itself — never lat/long.
     friendly_missing = {
         "date": "birth date",
         "time": "birth time",
-        "latitude": "birth place coordinates",
-        "longitude": "birth place coordinates",
-        "timezone": "birth timezone",
+        "latitude": "birth place (city and country)",
+        "longitude": "birth place (city and country)",
+        "timezone": "birth place (city and country)",
     }
     deduped_missing: list[str] = []
     for field in missing:
@@ -388,14 +664,12 @@ def format_lalkitab_missing_input_clarification(normalized: dict[str, Any], miss
         understood.append(f"birth place {normalized['birth_place_resolved']}")
     elif normalized.get("birth_place"):
         understood.append(f"birth place {normalized['birth_place']}")
-    if normalized.get("timezone"):
-        understood.append(f"timezone {normalized['timezone']}")
 
     prefix = f"I understood {', '.join(understood)}. " if understood else ""
-    if "birth place coordinates" in deduped_missing and normalized.get("birth_place"):
+    if "birth place (city and country)" in deduped_missing and normalized.get("birth_place"):
         return (
-            f"{prefix}I could not resolve that birthplace to coordinates yet. "
-            "Please confirm the nearest major city, or provide latitude, longitude, and timezone."
+            f"{prefix}I could not find \"{normalized['birth_place']}\" on the map yet. "
+            "Could you confirm the city and country (or the nearest major city, if it is a small town)?"
         )
     return f"{prefix}Please share the missing detail(s): {', '.join(deduped_missing)}."
 
@@ -798,7 +1072,9 @@ async def build_lalkitab_runtime_context(
         else {}
     )
     has_previous_chart = bool(previous_api_context.get("chart_context"))
-    requires_api = message_requires_lalkitab_api(message)
+    # A message that *is* birth details ("16 July 1987, 15:26, Delhi India")
+    # counts as astrology intent even without any keyword.
+    requires_api = message_requires_lalkitab_api(message) or message_contains_birth_details(message)
     # A bare follow-up ("Illinois", "10:30 AM") won't trip the intent keywords,
     # so continue any in-flight birth-input / disambiguation collection. Once a
     # chart exists, remembered birth input alone is not enough to rerun Vedika.

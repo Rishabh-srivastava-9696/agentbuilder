@@ -123,17 +123,53 @@ export interface Citation {
 }
 
 // Phase 5: Product card data
-export interface ProductData {
+export interface ProductVariantData {
+  id?: string;
+  variant_id?: string;
   sku?: string;
+  variant_sku?: string;
+  name?: string;
+  title?: string;
+  variant_title?: string;
+  variant_options?: Record<string, string>;
+  price?: number;
+  currency?: string;
+  currency_source?: string;
+  image_url?: string;
+  image?: string;
+  product_url?: string;
+  variant_url?: string;
+  in_stock?: boolean;
+  is_default?: boolean;
+}
+
+export interface ProductData {
+  id?: string;
+  sku?: string;
+  product_group_id?: string;
+  handle?: string;
   name: string;
   price?: number;
   currency?: string;
+  currency_source?: string;
   category?: string;
   in_stock?: boolean;
   features?: string[];
   image_url?: string;
+  image?: string;
   product_url?: string;
   description?: string;
+  has_variants?: boolean;
+  variant_count?: number;
+  price_min?: number;
+  price_max?: number;
+  default_variant_id?: string;
+  variant_id?: string;
+  variant_sku?: string;
+  variant_title?: string;
+  variant_options?: Record<string, string>;
+  variant_url?: string;
+  variants?: ProductVariantData[];
 }
 
 // Phase 5: Dealer card data
@@ -211,4 +247,20 @@ export interface APIError {
   message: string;
   detail?: string;
   status?: number;
+}
+
+// Lal Kitab kundali chart (visual artifact rendered by KundaliChart)
+export interface KundaliHouse {
+  house: number;
+  sign_number?: number | null;
+  rashi?: string | null;
+  rashi_hindi?: string | null;
+  planets: string[];
+}
+
+export interface KundaliChartData {
+  style?: string;
+  ascendant?: { sign_number: number; name: string; hindi?: string } | null;
+  houses: KundaliHouse[];
+  birth?: { date?: string | null; time?: string | null; place?: string | null } | null;
 }
