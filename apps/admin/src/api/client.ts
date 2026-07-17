@@ -646,6 +646,20 @@ async function optionalAdminList<T>(request: Promise<{ data: any }>, keys: strin
   }
 }
 
+async function requiredAdminList<T>(
+  request: Promise<{ data: any }>,
+  keys: string[],
+  resourceName: string,
+): Promise<T[]> {
+  const response = await request;
+  const hasExpectedShape = Array.isArray(response.data)
+    || keys.some((key) => Array.isArray(response.data?.[key]));
+  if (!hasExpectedShape) {
+    throw new Error(`${resourceName} response did not contain a list`);
+  }
+  return normalizeAdminList<T>(response.data, keys);
+}
+
 export const adminCapabilitiesApi = {
   getSkills: () =>
     optionalAdminList<SkillDefinition>(
@@ -658,9 +672,10 @@ export const adminCapabilitiesApi = {
       ['tools', 'items', 'data']
     ),
   getArtifactTypes: () =>
-    optionalAdminList<ArtifactTypeDefinition>(
+    requiredAdminList<ArtifactTypeDefinition>(
       apiClient.get('/api/v1/admin/artifacts'),
-      ['artifacts', 'items', 'data']
+      ['artifacts', 'items', 'data'],
+      'Chat artifact types',
     ),
   getAgentApiKeys: (params?: AgentApiKeyListParams) =>
     optionalAdminList<AgentApiKey>(

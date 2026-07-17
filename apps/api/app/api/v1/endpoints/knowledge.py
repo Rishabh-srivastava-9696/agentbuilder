@@ -28,7 +28,7 @@ class ProductData(BaseModel):
     name: str = Field(..., description="Product name/title")
     price: int = Field(..., description="Price in smallest currency unit (e.g., paise, cents)")
     currency: Optional[str] = Field(None, description="Currency code (e.g., INR, USD)")
-    currency_source: Optional[Literal["catalog", "configured_default", "missing"]] = None
+    currency_source: Optional[Literal["shopify_store", "presentment", "catalog", "configured_default", "missing"]] = None
     category: str = Field(..., description="Product category")
     image_url: Optional[str] = Field(None, description="Product image URL")
     product_url: Optional[str] = Field(None, description="Product page URL")
@@ -75,7 +75,7 @@ class BulkUploadItem(BaseModel):
     name: Optional[str] = None
     price: Optional[int] = None
     currency: Optional[str] = None
-    currency_source: Optional[Literal["catalog", "configured_default", "missing"]] = None
+    currency_source: Optional[Literal["shopify_store", "presentment", "catalog", "configured_default", "missing"]] = None
     category: Optional[str] = None
     image_url: Optional[str] = None
     product_url: Optional[str] = None
@@ -798,6 +798,8 @@ def _product_card_from_data(product_data: Dict[str, Any]) -> Dict[str, Any]:
         "sku": product_data.get("sku"),
         "name": product_data.get("parent_name") or product_data.get("name", "Unknown Product"),
         "price": product_data.get("price", 0),
+        "price_minor": product_data.get("price_minor", product_data.get("price", 0)),
+        "price_unit": "minor",
         "currency": product_data.get("currency"),
         "currency_source": product_data.get("currency_source", "missing"),
         "category": product_data.get("category", "Uncategorized"),
@@ -838,6 +840,8 @@ def _variant_from_product(product: Dict[str, Any], selected: Dict[str, Any]) -> 
         "variant_title": product.get("variant_title"),
         "variant_options": variant_options,
         "price": product.get("price"),
+        "price_minor": product.get("price_minor", product.get("price")),
+        "price_unit": "minor",
         "currency": product.get("currency"),
         "currency_source": product.get("currency_source"),
         "image_url": product.get("image_url") or product.get("image"),

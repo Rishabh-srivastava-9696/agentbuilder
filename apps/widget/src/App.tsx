@@ -55,11 +55,25 @@ function getOrCreateControlSecret(conversationId: string): string {
   return secret;
 }
 
+function getWidgetSessionStorageKey(agentId: string): string {
+  return `agent_widget_session_v1_${encodeURIComponent(window.location.origin)}_${agentId}`;
+}
+
+function readStoredWidgetSession(agentId: string): { conversationId?: string; userId?: string; sessionToken?: string } | undefined {
+  try {
+    const raw = sessionStorage.getItem(getWidgetSessionStorageKey(agentId));
+    return raw ? JSON.parse(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 interface AppProps {
   config?: WidgetConfig;
 }
 
 function App({ config }: AppProps) {
+  const configuredApiBase = (config?.apiUrl || API_BASE).replace(/\/$/, '');
   const {
     isOpen,
     messages,
@@ -73,6 +87,7 @@ function App({ config }: AppProps) {
     setIsTyping,
     setConfig,
     setConversationId,
+    setMessages,
     setExpanded,
     setBrandTheme,
     setHumanInControl,
@@ -95,6 +110,11 @@ function App({ config }: AppProps) {
   React.useEffect(() => {
     setExpanded(isFullscreen);
   }, [isFullscreen, setExpanded]);
+
+  React.useEffect(() => {
+    apiClient.setBaseUrl(configuredApiBase);
+    wsClient.setBaseUrl(configuredApiBase);
+  }, [configuredApiBase]);
 
   // user_id is issued by the server via the signed widget session below. Keep
   // only an in-memory fallback so every page load/new visitor starts clean.
@@ -134,7 +154,7 @@ function App({ config }: AppProps) {
       try {
         setUnavailableMessage(null);
         // 1. Get agent → extract brand_id
-        const agentRes = await fetch(`${API_BASE}/api/v1/public/agents/${agentId}`);
+        const agentRes = await fetch(`${configuredApiBase}/api/v1/public/agents/${agentId}`);
         if (!agentRes.ok) {
           setUnavailableMessage('This agent is not available for widget preview. Activate it and enable the Public Widget channel in NOVA Admin.');
           return;
@@ -165,22 +185,20 @@ function App({ config }: AppProps) {
         if (!brandId) return;
 
         // 2. Get brand → extract colors / identity
-        const brandRes = await fetch(`${API_BASE}/api/v1/public/brands/${brandId}`);
+        const brandRes = await fetch(`${configuredApiBase}/api/v1/public/brands/${brandId}`);
         if (!brandRes.ok) return;
         const brand = await brandRes.json();
 
         const theme = buildBrandTheme(brand.name || 'AI', brand.colors || {});
         setBrandTheme(theme);
 
-        // Persist agent_id for MessageBubble product fetches
-        localStorage.setItem('agent_widget_agent_id', agentId);
       } catch {
         setUnavailableMessage('NOVA could not load this agent right now. Check that the API is running and the agent is active.');
       }
     };
 
     fetchBrandTheme();
-  }, [agentId, config?.enableHumanTakeover, config?.showProductCards, config?.showSources, setBrandTheme]);
+  }, [agentId, configuredApiBase, config?.enableHumanTakeover, config?.showProductCards, config?.showSources, setBrandTheme]);
 
   React.useEffect(() => {
     if (config) setConfig(config);
@@ -287,10 +305,9 @@ function App({ config }: AppProps) {
     };
   }, [conversationId, agentId, humanTakeoverEnabled, setHumanInControl]);
 
-  // ── Establish a server-issued, signed session ─────────────────
-  // The server mints conversation_id + user_id bound to a signed token. The
-  // token stays in memory only; a reload/new visit starts a fresh conversation
-  // so public widget usage cannot inherit another visitor's context.
+  // ── Establish/resume a server-issued, signed session ─────────
+  // The signed token is retained only in tab-scoped sessionStorage. The API
+  // remains the source of truth; the widget hydrates history after resuming.
   React.useEffect(() => {
     if (!isOpen || conversationId || !agentId) return;
 
@@ -298,13 +315,25 @@ function App({ config }: AppProps) {
 
     (async () => {
       try {
-        const session = await apiClient.startSession(agentId);
+        const stored = readStoredWidgetSession(agentId);
+        const session = await apiClient.startSession(agentId, stored?.sessionToken);
         if (cancelled) return;
         apiClient.setSessionToken(session.sessionToken);
         wsClient.setSessionToken(session.sessionToken);
         setUserId(session.userId);
         setConversationId(session.conversationId);
-        setConvStartEvent('conversation_started');
+        sessionStorage.setItem(getWidgetSessionStorageKey(agentId), JSON.stringify({
+          version: 1,
+          agentId,
+          conversationId: session.conversationId,
+          userId: session.userId,
+          sessionToken: session.sessionToken,
+          savedAt: new Date().toISOString(),
+        }));
+        const history = await apiClient.getHistory();
+        if (cancelled) return;
+        if (history.length) setMessages(history);
+        setConvStartEvent(stored?.conversationId === session.conversationId ? 'conversation_resumed' : 'conversation_started');
       } catch (err) {
         if (!cancelled) {
           console.error('Failed to establish widget session:', err);
@@ -316,7 +345,7 @@ function App({ config }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, conversationId, agentId, setConversationId]);
+  }, [isOpen, conversationId, agentId, setConversationId, setMessages]);
 
   // ── Fire conversation lifecycle event once both IDs are ready ─
   React.useEffect(() => {
@@ -369,12 +398,22 @@ function App({ config }: AppProps) {
       let currentConvId = conversationId;
       let currentUserId = userId;
       if (!currentConvId) {
-        const session = await apiClient.startSession(agentId);
+        const stored = readStoredWidgetSession(agentId);
+        const session = await apiClient.startSession(agentId, stored?.sessionToken);
+        apiClient.setSessionToken(session.sessionToken);
         wsClient.setSessionToken(session.sessionToken);
         currentConvId = session.conversationId;
         currentUserId = session.userId;
         setUserId(session.userId);
         setConversationId(session.conversationId);
+        sessionStorage.setItem(getWidgetSessionStorageKey(agentId), JSON.stringify({
+          version: 1,
+          agentId,
+          conversationId: session.conversationId,
+          userId: session.userId,
+          sessionToken: session.sessionToken,
+          savedAt: new Date().toISOString(),
+        }));
       }
 
       trackEvent({
@@ -423,6 +462,7 @@ function App({ config }: AppProps) {
         citations: response.citations,
         products: response.products,
         dealers: response.dealers,
+        commerce: response.commerce,
         activitySteps: finalActivity.steps.length ? finalActivity.steps : undefined,
         metadata: {
           ...(response.metadata || {}),
@@ -491,6 +531,8 @@ function App({ config }: AppProps) {
             showProductCards={showProductCards}
             isAgentConfigured={Boolean(agentId)}
             unavailableMessage={unavailableMessage || undefined}
+            apiUrl={configuredApiBase}
+            agentId={agentId}
           />
         </div>
       )}

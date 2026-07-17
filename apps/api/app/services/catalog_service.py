@@ -7,19 +7,21 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import ipaddress
 import re
 import uuid
 from datetime import datetime
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 import structlog
 
 from app.config import Settings
 from app.connections import connection_manager
-from app.services.commerce_config import normalize_commerce_config
 from app.services.knowledge_service import KnowledgeService
 from .job_store import JobStore
 
@@ -37,6 +39,12 @@ async def create_job(job_id: str, job_type: str, total: int = 0) -> None:
         "total": total,
         "items": [],
         "results": [],
+        "counts": {
+            "products_seen": 0,
+            "products_upserted": 0,
+            "products_marked_inactive": 0,
+            "error_count": 0,
+        },
         "error": None,
         "created_at": datetime.utcnow().isoformat(),
     })
@@ -77,8 +85,9 @@ def _detect_format(data: Any) -> str:
 
 def _to_cents(value: Any) -> int:
     try:
-        return int(float(str(value).replace(",", "")) * 100)
-    except (ValueError, TypeError):
+        amount = Decimal(str(value).replace(",", "").strip())
+        return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, TypeError):
         return 0
 
 
@@ -93,6 +102,99 @@ def _normalize_currency(value: Any) -> Optional[str]:
         return None
     currency = str(value).strip()
     return currency.upper() if currency else None
+
+
+def normalize_shopify_store_url(value: Any) -> str:
+    """Return a normalized Shopify store root URL or raise an actionable error."""
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("Shopify store URL is required, for example celavilifestyle.com.")
+
+    candidate = raw if "://" in raw else f"https://{raw}"
+    try:
+        parsed = urlsplit(candidate)
+        hostname = parsed.hostname
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            raise ValueError
+        if parsed.username or parsed.password:
+            raise ValueError
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ValueError
+        host = hostname.rstrip(".").lower()
+        _validate_shopify_hostname(host)
+        port = f":{parsed.port}" if parsed.port else ""
+    except (ValueError, TypeError):
+        raise ValueError(
+            "Enter a Shopify store root URL such as https://celavilifestyle.com or https://store.myshopify.com."
+        ) from None
+
+    return urlunsplit((parsed.scheme, f"{host}{port}", "", "", ""))
+
+
+def _validate_shopify_hostname(hostname: str) -> None:
+    """Reject obvious local, private, and cloud-metadata destinations."""
+    host = hostname.rstrip(".").lower()
+    blocked_names = {
+        "localhost",
+        "localhost.localdomain",
+        "metadata",
+        "metadata.google.internal",
+        "host.docker.internal",
+        "kubernetes.default.svc",
+    }
+    if host in blocked_names or host.endswith((".localhost", ".local", ".internal", ".test", ".invalid")):
+        raise ValueError
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        raise ValueError
+
+
+def _safe_shopify_redirect(base_host: str, location: str, request_url: str) -> Optional[str]:
+    """Resolve one redirect without sending the Admin token to an unrelated host."""
+    target = urljoin(request_url, location)
+    try:
+        original_host = base_host.rstrip(".").lower()
+        host_labels = [label for label in original_host.split(".") if label]
+        if host_labels and host_labels[0] == "www" and len(host_labels) > 1:
+            host_labels = host_labels[1:]
+        canonical_myshopify_host = (
+            original_host
+            if original_host.endswith(".myshopify.com")
+            else f"{host_labels[0]}.myshopify.com" if host_labels else ""
+        )
+        parsed = urlsplit(target)
+        target_host = (parsed.hostname or "").rstrip(".").lower()
+        if parsed.scheme not in {"http", "https"} or not target_host:
+            raise ValueError
+        if parsed.username or parsed.password or parsed.fragment:
+            raise ValueError
+        _validate_shopify_hostname(target_host)
+        if target_host not in {original_host, canonical_myshopify_host}:
+            raise ValueError
+        return target
+    except (TypeError, ValueError):
+        logger.warning("shopify_currency_redirect_rejected", location=location)
+        return None
+
+
+def normalize_currency_code(value: Any, *, allow_empty: bool = True) -> Optional[str]:
+    """Normalize an explicit ISO-style three-letter currency code."""
+    currency = _normalize_currency(value)
+    if not currency and allow_empty:
+        return None
+    if not currency or not re.fullmatch(r"[A-Z]{3}", currency):
+        raise ValueError("Currency must be a three-letter code such as INR, USD, or EUR.")
+    return currency
 
 
 def _extract_catalog_currency(*sources: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -126,8 +228,13 @@ def _extract_catalog_currency(*sources: Optional[Dict[str, Any]]) -> Optional[st
 
 def _currency_with_source(
     *catalog_sources: Optional[Dict[str, Any]],
+    shopify_currency: Optional[str] = None,
     fallback_currency: Optional[str] = None,
 ) -> tuple[Optional[str], str]:
+    authoritative_currency = _normalize_currency(shopify_currency)
+    if authoritative_currency:
+        return authoritative_currency, "shopify_store"
+
     catalog_currency = _extract_catalog_currency(*catalog_sources)
     if catalog_currency:
         return catalog_currency, "catalog"
@@ -153,6 +260,13 @@ def _shopify_product_group_id(product: Dict[str, Any], handle: str, product_url:
         or uuid.uuid4()
     )
     return f"shopify:{product_id}"
+
+
+def _shopify_source_key(product: Dict[str, Any], variant: Optional[Dict[str, Any]] = None) -> str:
+    product_id = product.get("id") or product.get("admin_graphql_api_id") or product.get("graphql_id") or product.get("handle")
+    product_key = str(product_id or "unknown-product")
+    variant_id = (variant or {}).get("id") or (variant or {}).get("admin_graphql_api_id") or (variant or {}).get("graphql_id")
+    return f"shopify:{product_key}:{variant_id or 'product'}"
 
 
 def _shopify_option_names(product: Dict[str, Any]) -> List[str]:
@@ -226,35 +340,44 @@ async def _resolve_configured_default_currency(brand_id: Optional[str]) -> Optio
                 {"slug": brand_id},
             ]
         })
-
-        brand_ids = {brand_id}
-        if brand:
-            for key in ("id", "slug"):
-                if brand.get(key):
-                    brand_ids.add(brand[key])
-
-        agent = await system_db.agents.find_one({
-            "$or": [
-                {"id": brand_id},
-                {"brand_id": {"$in": list(brand_ids)}},
-                {"brand_slug": {"$in": list(brand_ids)}},
-            ],
-            "configuration.commerce.default_currency": {"$nin": [None, ""]},
-        })
-        if not agent:
+        if not brand:
             return None
 
-        config = agent.get("configuration") or {}
-        commerce = normalize_commerce_config(config.get("commerce"))
-        return _normalize_currency(commerce.get("default_currency"))
+        sync_config = brand.get("catalog_sync") or {}
+        explicit_currency = (
+            sync_config.get("fallback_currency")
+            or sync_config.get("default_currency")
+            or brand.get("default_currency")
+            or brand.get("currency")
+        )
+        return normalize_currency_code(explicit_currency)
     except Exception as exc:
         logger.warning("catalog_default_currency_resolution_failed", brand_id=brand_id, error=str(exc))
         return None
 
 
+async def _update_brand_sync_state(brand_id: Optional[str], updates: Dict[str, Any]) -> None:
+    if not brand_id or not updates:
+        return
+    try:
+        system_db = connection_manager.get_system_db()
+        set_fields = {f"catalog_sync.{key}": value for key, value in updates.items()}
+        await system_db.brands.update_one(
+            {"$or": [{"id": brand_id}, {"slug": brand_id}]},
+            {"$set": set_fields},
+        )
+    except Exception as exc:
+        logger.warning("catalog_sync_state_persist_failed", brand_id=brand_id, error=str(exc))
+
+
 # ── Normalizers ───────────────────────────────────────────────────────────────
 
-def _normalize_shopify(data: dict, base_url: str = "", fallback_currency: Optional[str] = None) -> List[dict]:
+def _normalize_shopify(
+    data: dict,
+    base_url: str = "",
+    fallback_currency: Optional[str] = None,
+    shopify_currency: Optional[str] = None,
+) -> List[dict]:
     items: List[dict] = []
     for product in data.get("products", []):
         title = product.get("title", "")
@@ -276,7 +399,12 @@ def _normalize_shopify(data: dict, base_url: str = "", fallback_currency: Option
         default_variant_id = str(variants[0].get("id")) if variants and variants[0].get("id") not in (None, "") else None
 
         for v in variants:
-            currency, currency_source = _currency_with_source(v, product, fallback_currency=fallback_currency)
+            currency, currency_source = _currency_with_source(
+                v,
+                product,
+                shopify_currency=shopify_currency,
+                fallback_currency=fallback_currency,
+            )
             variant_title = v.get("title", "")
             name = f"{title} – {variant_title}" if variant_title and variant_title != "Default Title" else title
             v_img = _shopify_variant_image(v, images, primary_image)
@@ -289,8 +417,13 @@ def _normalize_shopify(data: dict, base_url: str = "", fallback_currency: Option
                 "name": name,
                 "parent_name": title,
                 "price": _to_cents(_price_amount(v.get("price", 0))),
+                "price_unit": "minor",
                 "currency": currency,
                 "currency_source": currency_source,
+                "source_type": "shopify",
+                "source_product_id": str(product.get("id") or product.get("admin_graphql_api_id") or product.get("handle") or ""),
+                "source_variant_id": str(v.get("id") or v.get("admin_graphql_api_id") or ""),
+                "source_key": _shopify_source_key(product, v),
                 "category": product_type,
                 "image_url": v_img,
                 "product_url": product_url,
@@ -312,13 +445,22 @@ def _normalize_shopify(data: dict, base_url: str = "", fallback_currency: Option
             })
 
         if not variants:
-            currency, currency_source = _currency_with_source(product, fallback_currency=fallback_currency)
+            currency, currency_source = _currency_with_source(
+                product,
+                shopify_currency=shopify_currency,
+                fallback_currency=fallback_currency,
+            )
             items.append({
                 "sku": str(product.get("id") or uuid.uuid4()),
                 "name": title,
                 "price": _to_cents(_price_amount(product.get("price", 0))),
+                "price_unit": "minor",
                 "currency": currency,
                 "currency_source": currency_source,
+                "source_type": "shopify",
+                "source_product_id": str(product.get("id") or product.get("admin_graphql_api_id") or product.get("handle") or ""),
+                "source_variant_id": None,
+                "source_key": _shopify_source_key(product),
                 "category": product_type,
                 "image_url": primary_image,
                 "product_url": product_url,
@@ -416,32 +558,99 @@ def _normalize_schema_org(raw: Any, fallback_currency: Optional[str] = None) -> 
 
 # ── Async fetch functions ─────────────────────────────────────────────────────
 
+async def _fetch_shopify_default_currency(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str],
+) -> Optional[str]:
+    """Fetch the store's default currency from Shopify's authenticated shop API."""
+    if "X-Shopify-Access-Token" not in headers:
+        return None
+
+    try:
+        base = normalize_shopify_store_url(base_url)
+        base_host = urlsplit(base).hostname or ""
+        url = f"{base.rstrip('/')}/admin/api/2024-01/shop.json"
+        response = await client.get(url, headers=headers)
+        is_redirect = bool(getattr(response, "is_redirect", False)) or response.status_code in {301, 302, 303, 307, 308}
+        if is_redirect:
+            location = (getattr(response, "headers", {}) or {}).get("location")
+            redirect_url = _safe_shopify_redirect(base_host, str(location or ""), url) if location else None
+            if not redirect_url:
+                return None
+            response = await client.get(redirect_url, headers=headers)
+            if bool(getattr(response, "is_redirect", False)) or response.status_code in {301, 302, 303, 307, 308}:
+                logger.warning("shopify_currency_redirect_rejected", reason="multiple_redirects")
+                return None
+        if response.status_code >= 400:
+            logger.warning("shopify_currency_fetch_failed", status=response.status_code)
+            return None
+        payload = response.json()
+        shop = payload.get("shop") if isinstance(payload, dict) else None
+        if not isinstance(shop, dict):
+            return None
+        return _normalize_currency(shop.get("currency") or shop.get("currency_code"))
+    except Exception as exc:
+        logger.warning("shopify_currency_fetch_failed", error=str(exc))
+        return None
+
 async def fetch_shopify_products(
     store_url: str,
     access_token: Optional[str],
     job_id: str,
     brand_id: Optional[str] = None,
+    fallback_currency: Optional[str] = None,
 ) -> None:
     """Background task: paginate Shopify /products.json and store results in job."""
     if not await _job_store.get(job_id):
         return
 
-    base = store_url.strip().rstrip("/")
-    if not base.startswith("http"):
-        base = f"https://{base}"
-
-    headers: Dict[str, str] = {
-        "User-Agent": "Mozilla/5.0 (compatible; AgentBuilder/1.0)",
-        "Accept": "application/json",
-    }
-    if access_token:
-        headers["X-Shopify-Access-Token"] = access_token.strip()
-
     all_items: List[dict] = []
+    started_at = datetime.utcnow().isoformat()
     try:
-        fallback_currency = await _resolve_configured_default_currency(brand_id)
+        base = normalize_shopify_store_url(store_url)
+        explicit_fallback = normalize_currency_code(fallback_currency) if fallback_currency else await _resolve_configured_default_currency(brand_id)
+        await _job_store.update(job_id, {
+            "brand_id": brand_id,
+            "source_url": base,
+            "started_at": started_at,
+            "status": "processing",
+            "counts": {
+                "products_seen": 0,
+                "products_upserted": 0,
+                "products_marked_inactive": 0,
+                "error_count": 0,
+            },
+        })
+        await _update_brand_sync_state(brand_id, {
+            "last_sync_job_id": job_id,
+            "last_sync_status": "processing",
+            "last_sync_started_at": started_at,
+            "last_sync_error": None,
+        })
+
+        headers: Dict[str, str] = {
+            "User-Agent": "Mozilla/5.0 (compatible; AgentBuilder/1.0)",
+            "Accept": "application/json",
+        }
+        if access_token and access_token.strip():
+            headers["X-Shopify-Access-Token"] = access_token.strip()
+
         # Use a client without default redirect following to manage it manually and safely
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            shopify_currency = await _fetch_shopify_default_currency(client, base, headers)
+            resolved_currency = shopify_currency or explicit_fallback
+            currency_source = "shopify_store" if shopify_currency else ("configured_default" if explicit_fallback else "missing")
+            logger.info(
+                "shopify_currency_resolved",
+                currency=resolved_currency,
+                source=currency_source,
+            )
+            await _job_store.update(job_id, {
+                "currency": resolved_currency,
+                "currency_source": currency_source,
+                "warning": None if access_token and access_token.strip() else "Public Shopify import: store currency and private products may be unavailable. Configure an Admin API token for production sync.",
+            })
             page_info: Optional[str] = None
             page = 1
             while True:
@@ -494,9 +703,18 @@ async def fetch_shopify_products(
                 if not products:
                     break
 
-                batch = _normalize_shopify(data, base_url=base, fallback_currency=fallback_currency)
+                batch = _normalize_shopify(
+                    data,
+                    base_url=base,
+                    fallback_currency=explicit_fallback,
+                    shopify_currency=shopify_currency,
+                )
                 all_items.extend(batch)
-                await _job_store.update(job_id, {"processed": len(all_items), "total": len(all_items)})
+                await _job_store.update(job_id, {
+                    "processed": len(all_items),
+                    "total": len(all_items),
+                    "page": page,
+                })
 
                 # Cursor-based pagination via Link header
                 link = resp.headers.get("Link", "")
@@ -507,17 +725,65 @@ async def fetch_shopify_products(
                 else:
                     break
 
-        await _job_store.update(job_id, {"items": all_items, "status": "completed", "total": len(all_items)})
-        if brand_id and all_items:
-            await _upsert_shopify_catalog_into_knowledge(brand_id, all_items, job_id)
+        sync_counts = {
+            "products_seen": len(all_items),
+            "products_upserted": 0,
+            "products_marked_inactive": 0,
+            "error_count": 0,
+        }
+        if brand_id:
+            sync_counts = await _upsert_shopify_catalog_into_knowledge(brand_id, all_items, job_id, base)
+        completed_at = datetime.utcnow().isoformat()
+        await _job_store.update(job_id, {
+            "items": all_items,
+            "status": "completed",
+            "total": len(all_items),
+            "completed_at": completed_at,
+            "counts": sync_counts,
+        })
+        await _update_brand_sync_state(brand_id, {
+            "last_sync_status": "completed",
+            "last_sync_completed_at": completed_at,
+            "last_synced_at": completed_at,
+            "last_sync_error": None,
+            "last_sync_counts": sync_counts,
+        })
         logger.info("shopify_fetch_complete", items=len(all_items))
 
     except Exception as exc:
-        await _job_store.update(job_id, {"status": "error", "error": str(exc)})
+        error_message = str(exc)
+        finished_at = datetime.utcnow().isoformat()
+        await _job_store.update(job_id, {
+            "status": "error",
+            "error": error_message,
+            "completed_at": finished_at,
+            "counts": {
+                "products_seen": len(all_items),
+                "products_upserted": 0,
+                "products_marked_inactive": 0,
+                "error_count": 1,
+            },
+        })
+        await _update_brand_sync_state(brand_id, {
+            "last_sync_status": "error",
+            "last_sync_completed_at": finished_at,
+            "last_sync_error": error_message,
+            "last_sync_counts": {
+                "products_seen": len(all_items),
+                "products_upserted": 0,
+                "products_marked_inactive": 0,
+                "error_count": 1,
+            },
+        })
         logger.error("shopify_fetch_failed", error=str(exc))
 
 
-async def _upsert_shopify_catalog_into_knowledge(brand_id: str, items: List[dict], source_job_id: str) -> None:
+async def _upsert_shopify_catalog_into_knowledge(
+    brand_id: str,
+    items: List[dict],
+    source_job_id: str,
+    source_url: str,
+) -> Dict[str, int]:
     """Persist fetched Shopify products into the brand knowledge base.
 
     Shopify MCP is useful for actions, but catalog discovery needs NOVA's own
@@ -530,8 +796,13 @@ async def _upsert_shopify_catalog_into_knowledge(brand_id: str, items: List[dict
             sku=str(item.get("sku") or item.get("id") or uuid.uuid4()),
             name=item.get("name") or item.get("title") or "Untitled product",
             price=int(item.get("price") or 0),
+            price_unit=item.get("price_unit") or "minor",
             currency=item.get("currency"),
             currency_source=item.get("currency_source") or ("catalog" if item.get("currency") else "missing"),
+            source_type=item.get("source_type") or "shopify",
+            source_product_id=item.get("source_product_id"),
+            source_variant_id=item.get("source_variant_id"),
+            source_key=item.get("source_key"),
             category=item.get("category") or item.get("product_type") or "General",
             image_url=item.get("image_url") or item.get("image"),
             product_url=item.get("product_url") or item.get("url"),
@@ -553,8 +824,15 @@ async def _upsert_shopify_catalog_into_knowledge(brand_id: str, items: List[dict
         )
         for item in items
     ]
-    await service.process_bulk_upload(kb_job_id, "product", product_items, brand_id)
+    counts = await service.sync_shopify_catalog(
+        kb_job_id,
+        product_items,
+        brand_id,
+        source_url=source_url,
+        source_job_id=source_job_id,
+    )
     await _job_store.update(source_job_id, {"knowledge_job_id": kb_job_id, "knowledge_status": "completed"})
+    return counts
 
 
 async def fetch_json_feed(url: str, fallback_currency: Optional[str] = None) -> dict:

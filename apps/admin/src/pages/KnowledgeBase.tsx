@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api, Agent, Brand } from '../api/client';
 import DocumentUploadWizard from '../components/KnowledgeBase/DocumentUploadWizard';
 import KnowledgeExplorer from '../components/KnowledgeBase/KnowledgeExplorer';
+import CatalogSyncPanel from '../components/KnowledgeBase/CatalogSyncPanel';
 import type { KnowledgeFolderSelection, UploadDocumentResponse } from '../types/knowledge';
 
 export default function KnowledgeBase() {
@@ -92,15 +93,18 @@ export default function KnowledgeBase() {
       </div>
 
       {brandId ? (
-        <KnowledgeExplorer
-          key={`${brandId}-${requestedAgentId || 'workspace'}-${refreshKey}`}
-          brandId={brandId}
-          brandName={brand?.name}
-          agentId={requestedAgentId}
-          agentName={agent?.name}
-          mode={requestedAgentId ? 'agent' : 'workspace'}
-          onUpload={handleUpload}
-        />
+        <>
+          <CatalogSyncPanel brandId={brandId} brandName={brand?.name} />
+          <KnowledgeExplorer
+            key={`${brandId}-${requestedAgentId || 'workspace'}-${refreshKey}`}
+            brandId={brandId}
+            brandName={brand?.name}
+            agentId={requestedAgentId}
+            agentName={agent?.name}
+            mode={requestedAgentId ? 'agent' : 'workspace'}
+            onUpload={handleUpload}
+          />
+        </>
       ) : (
         <div className="rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">
           Create or select a brand before managing knowledge.

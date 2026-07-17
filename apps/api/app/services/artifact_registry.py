@@ -18,6 +18,7 @@ artifact type here makes it configurable everywhere.
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 
@@ -48,6 +49,37 @@ BUILT_IN_ARTIFACT_TYPES: dict[str, dict[str, Any]] = {
     },
 }
 
+LAL_KITAB_TEMPLATE = "astrology_lalkitab"
+
+# These values have existed in agent records and exports over time. Keep the
+# aliases deliberately narrow: a generic "astrology" template is not enough
+# to opt an agent into the Lal Kitab chart artifact.
+_LAL_KITAB_TEMPLATE_ALIASES = {
+    "lalkitab",
+    "lal_kitab",
+    "lal-kitab",
+    "lal kitab",
+    "astrology_lalkitab",
+    "astrology_lal_kitab",
+    "astrology-lal-kitab",
+    "astrology lal kitab",
+    "lalkitab_astrology",
+    "lal_kitab_astrology",
+}
+
+
+def normalize_agent_template(value: Any) -> str:
+    """Return the canonical template id for known legacy aliases."""
+    text = str(value or "").strip().lower()
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    alias_compact = {
+        re.sub(r"[^a-z0-9]+", "", alias)
+        for alias in _LAL_KITAB_TEMPLATE_ALIASES
+    }
+    if compact in alias_compact:
+        return LAL_KITAB_TEMPLATE
+    return text
+
 
 def list_artifact_types() -> list[dict[str, Any]]:
     """All built-in artifact types, for the admin UI."""
@@ -60,14 +92,14 @@ def get_artifact_type(artifact_id: str) -> dict[str, Any] | None:
 
 
 def _agent_template(config: dict[str, Any] | None) -> str:
-    config = config or {}
+    config = config if isinstance(config, dict) else {}
     domain = config.get("domain") if isinstance(config.get("domain"), dict) else {}
-    return str(
+    return normalize_agent_template(
         domain.get("template")
         or config.get("agent_template")
         or config.get("template")
         or "generic"
-    ).lower()
+    )
 
 
 def artifact_types_for_config(config: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -87,7 +119,7 @@ def resolve_artifact_settings(config: dict[str, Any] | None) -> dict[str, dict[s
     Returns {artifact_id: {"enabled": bool, "options": {...}}} for every
     artifact type applicable to the agent.
     """
-    config = config or {}
+    config = config if isinstance(config, dict) else {}
     stored = config.get("artifacts") if isinstance(config.get("artifacts"), dict) else {}
     resolved: dict[str, dict[str, Any]] = {}
     for artifact in artifact_types_for_config(config):

@@ -18,6 +18,7 @@ interface WidgetStore extends WidgetState {
   setTyping: (isTyping: boolean) => void;
   setIsTyping: (isTyping: boolean) => void;
   addMessage: (message: Message) => void;
+  setMessages: (messages: Message[]) => void;
   updateMessage: (id: string, updates: Partial<Message>) => void;
   updateLastMessage: (content: string) => void;
   setConversationId: (id: string) => void;
@@ -84,6 +85,8 @@ export const useWidgetStore = create<WidgetStore>((set, get) => ({
   addMessage: (message: Message) => set((state) => ({
     messages: [...state.messages, message]
   })),
+
+  setMessages: (messages: Message[]) => set({ messages }),
   
   updateMessage: (id: string, updates: Partial<Message>) => {
     console.log('[Store] updateMessage called:', { id, updates, currentMessages: get().messages.length });

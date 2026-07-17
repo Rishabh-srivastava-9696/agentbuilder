@@ -100,6 +100,7 @@ class ShopifyImportRequest(BaseModel):
     store_url: str
     brand_id: str
     access_token: Optional[str] = None
+    fallback_currency: Optional[str] = None
 
 
 class JsonFeedRequest(BaseModel):
@@ -116,6 +117,7 @@ class SyncConfigUpdate(BaseModel):
     source_type: str
     source_url: str
     access_token: Optional[str] = None
+    fallback_currency: Optional[str] = None
     auto_sync: bool = False
     sync_frequency: str = "manual"  # daily | weekly | manual
 
@@ -129,29 +131,43 @@ async def import_shopify(
     runtime_settings_service: RuntimeSettingsService = Depends(get_runtime_settings_service),
 ):
     """Start async Shopify product fetch. Paginates /products.json. Returns job_id."""
+    try:
+        store_url = catalog_service.normalize_shopify_store_url(req.store_url)
+        fallback_currency = catalog_service.normalize_currency_code(req.fallback_currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Save the encrypted configuration before scheduling the worker so a
+    # dashboard refresh can always recover the job's source settings.
+    await _upsert_sync_config(
+        req.brand_id,
+        {
+            "source_type": "shopify",
+            "source_url": store_url,
+            **({"access_token": req.access_token} if req.access_token else {}),
+            **({"fallback_currency": fallback_currency} if fallback_currency else {}),
+        },
+        runtime_settings_service=runtime_settings_service,
+    )
+
     job_id = str(uuid.uuid4())
     await catalog_service.create_job(job_id, "shopify", total=0)
 
     background_tasks.add_task(
         catalog_service.fetch_shopify_products,
-        req.store_url,
+        store_url,
         req.access_token,
         job_id,
         req.brand_id,
+        fallback_currency,
     )
 
-    # Persist sync config for this brand so resync works later
-    await _upsert_sync_config(
-        req.brand_id,
-        {
-            "source_type": "shopify",
-            "source_url": req.store_url,
-            **({"access_token": req.access_token} if req.access_token else {}),
-        },
-        runtime_settings_service=runtime_settings_service,
-    )
-
-    return {"job_id": job_id, "status": "processing"}
+    return {
+        "job_id": job_id,
+        "status": "processing",
+        "source_url": store_url,
+        "warning": None if req.access_token else "Public Shopify import: use an Admin API token for production sync.",
+    }
 
 
 # ── Import: JSON feed ─────────────────────────────────────────────────────────
@@ -229,9 +245,11 @@ async def import_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks):
 # ── Job status ────────────────────────────────────────────────────────────────
 
 @router.get("/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, brand_id: Optional[str] = None):
     job = await catalog_service.get_job(job_id)
     if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if brand_id and job.get("brand_id") and job.get("brand_id") != brand_id:
         raise HTTPException(status_code=404, detail="Job not found.")
     return job
 
@@ -259,16 +277,28 @@ async def update_sync_config(
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found.")
 
+    try:
+        source_url = catalog_service.normalize_shopify_store_url(update.source_url) if update.source_type == "shopify" else update.source_url.strip()
+        fields_set = getattr(update, "model_fields_set", getattr(update, "__fields_set__", set()))
+        fallback_currency = None
+        if "fallback_currency" in fields_set:
+            fallback_currency = catalog_service.normalize_currency_code(update.fallback_currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     existing = dict(brand.get("catalog_sync") or {})
+    sync_patch = {
+        **existing,
+        "source_type": update.source_type,
+        "source_url": source_url,
+        "auto_sync": update.auto_sync,
+        "sync_frequency": update.sync_frequency,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    if "fallback_currency" in fields_set:
+        sync_patch["fallback_currency"] = fallback_currency
     patch = _protect_sync_config_secrets(
-        {
-            **existing,
-            "source_type": update.source_type,
-            "source_url": update.source_url,
-            "auto_sync": update.auto_sync,
-            "sync_frequency": update.sync_frequency,
-            "updated_at": datetime.utcnow().isoformat(),
-        },
+        sync_patch,
         existing=existing,
         runtime_settings_service=runtime_settings_service,
     )
@@ -304,28 +334,43 @@ async def manual_sync(
 
     source_type = config.get("source_type")
 
-    # Update last_synced_at
-    await db.brands.update_one(
-        {"id": brand_id},
-        {"$set": {"catalog_sync.last_synced_at": datetime.utcnow().isoformat()}},
-    )
-
     if source_type == "shopify":
+        try:
+            source_url = catalog_service.normalize_shopify_store_url(config.get("source_url"))
+            fallback_currency = catalog_service.normalize_currency_code(config.get("fallback_currency"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         job_id = str(uuid.uuid4())
         await catalog_service.create_job(job_id, "shopify")
         background_tasks.add_task(
             catalog_service.fetch_shopify_products,
-            config["source_url"],
+            source_url,
             config.get("access_token"),
             job_id,
             brand_id,
+            fallback_currency,
         )
-        return {"job_id": job_id, "status": "processing"}
+        return {
+            "job_id": job_id,
+            "status": "processing",
+            "source_url": source_url,
+            "warning": None if config.get("access_token") else "Public Shopify import: use an Admin API token for production sync.",
+        }
 
     if source_type == "json_feed":
         try:
             fallback_currency = await catalog_service._resolve_configured_default_currency(brand_id)
             result = await catalog_service.fetch_json_feed(config["source_url"], fallback_currency=fallback_currency)
+            completed_at = datetime.utcnow().isoformat()
+            await db.brands.update_one(
+                {"id": brand_id},
+                {"$set": {
+                    "catalog_sync.last_sync_status": "completed",
+                    "catalog_sync.last_sync_completed_at": completed_at,
+                    "catalog_sync.last_synced_at": completed_at,
+                    "catalog_sync.last_sync_error": None,
+                }},
+            )
             return {"status": "completed", **result}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))

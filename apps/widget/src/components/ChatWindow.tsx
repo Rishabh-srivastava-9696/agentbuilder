@@ -28,6 +28,8 @@ interface ChatWindowProps {
   showProductCards?: boolean;
   isAgentConfigured?: boolean;
   unavailableMessage?: string;
+  apiUrl?: string;
+  agentId?: string | null;
 }
 
 // ── Icon components ────────────────────────────────────────────
@@ -150,6 +152,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   showProductCards = true,
   isAgentConfigured = true,
   unavailableMessage,
+  apiUrl,
+  agentId,
 }) => {
   const { brandTheme } = useWidgetStore();
   const [inputValue, setInputValue] = React.useState('');
@@ -420,6 +424,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     onFeedback={onFeedback}
                     showSources={showSources}
                     showProductCards={showProductCards}
+                    apiUrl={apiUrl}
+                    agentId={agentId}
                   />
                   {showPlaceChips && (
                     <div className="activity-disambiguation" style={{ margin: '2px 16px 8px' }}>

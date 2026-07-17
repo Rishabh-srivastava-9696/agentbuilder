@@ -15,7 +15,7 @@ export interface WebSocketClientOptions {
 }
 
 export class WebSocketClient {
-  private readonly baseUrl: string;
+  private baseUrl: string;
   private readonly heartbeatInterval: number;
   private readonly pongTimeout: number;
   private readonly reconnectBaseDelay: number;
@@ -34,12 +34,20 @@ export class WebSocketClient {
   private pendingReject: ((err: Error) => void) | null = null;
   private pendingCallback: ((chunk: StreamingMessage) => void) | null = null;
   private accumulatedContent = '';
-  private pendingMeta: Partial<Pick<Message, 'citations' | 'products' | 'dealers' | 'metadata'>> = {};
+  private pendingMeta: Partial<Pick<Message, 'citations' | 'products' | 'dealers' | 'metadata' | 'commerce'>> = {};
   private sessionToken?: string;
 
   /** Hold the signed session token included with every outbound message frame. */
   setSessionToken(token: string | undefined): void {
     this.sessionToken = token;
+  }
+
+  setBaseUrl(baseUrl: string): void {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+    if (this.ws) {
+      this.disconnect();
+      this.intentionalClose = false;
+    }
   }
 
   constructor(baseUrl: string, options: WebSocketClientOptions = {}) {
@@ -59,6 +67,8 @@ export class WebSocketClient {
     if (chunk.products?.length) this.pendingMeta.products = chunk.products;
     if (chunk.dealers?.length) this.pendingMeta.dealers = chunk.dealers;
     if (chunk.metadata) this.pendingMeta.metadata = { ...(this.pendingMeta.metadata || {}), ...chunk.metadata };
+    if (chunk.commerce) this.pendingMeta.commerce = { ...(this.pendingMeta.commerce || {}), ...chunk.commerce };
+    if (chunk.metadata?.cart && !this.pendingMeta.commerce) this.pendingMeta.commerce = { cart: chunk.metadata.cart };
   }
 
   // Central message router — set once per connection in connect()
@@ -104,6 +114,7 @@ export class WebSocketClient {
         products: meta.products ?? [],
         dealers: meta.dealers ?? [],
         metadata: meta.metadata,
+        commerce: meta.commerce,
       });
     } else if (chunk.type === 'final_answer') {
       // Authoritative full answer. Replace the accumulated text so the resolved
@@ -151,6 +162,7 @@ export class WebSocketClient {
       products: this.pendingMeta.products ?? [],
       dealers: this.pendingMeta.dealers ?? [],
       metadata: this.pendingMeta.metadata,
+      commerce: this.pendingMeta.commerce,
     };
   }
 

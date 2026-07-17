@@ -6,7 +6,11 @@ import {
 } from '@heroicons/react/24/outline';
 import { AZURE_OPENAI_PROVIDER_LABEL, getAzureDeploymentOptions } from '../../utils/llmOptions';
 import { api, type ArtifactTypeDefinition } from '../../api/client';
-import type { AgentStudioFormProps } from './types';
+import {
+  isLalKitabTemplate,
+  normalizeAgentTemplate,
+  type AgentStudioFormProps,
+} from './types';
 
 /** Common ISO-4217 currencies for the product-card currency dropdown. */
 const CURRENCY_OPTIONS: Array<{ code: string; label: string }> = [
@@ -111,6 +115,7 @@ function Switch({
       <button
         type="button"
         onClick={onChange}
+        aria-label={`Toggle ${label}`}
         className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${checked ? 'bg-gray-950' : 'bg-gray-200'}`}
         aria-pressed={checked}
       >
@@ -128,14 +133,17 @@ export default function AgentConfigForm({
   deploymentsLoading,
 }: AgentStudioFormProps) {
   const modelOptions = getAzureDeploymentOptions(deployments, data.model);
-  const { data: artifactTypes = [] } = useQuery<ArtifactTypeDefinition[]>({
+  const artifactQuery = useQuery<ArtifactTypeDefinition[]>({
     queryKey: ['admin', 'artifact-types'],
     queryFn: api.getArtifactTypes,
     staleTime: 5 * 60_000,
+    retry: false,
   });
+  const artifactTypes = artifactQuery.data || [];
+  const normalizedTemplate = normalizeAgentTemplate(data.agent_template);
   const applicableArtifacts = artifactTypes.filter((artifact) => {
-    const artifactTemplates = artifact.applies_to_templates || [];
-    return artifactTemplates.length === 0 || artifactTemplates.includes(data.agent_template);
+    const artifactTemplates = (artifact.applies_to_templates || []).map(normalizeAgentTemplate);
+    return artifactTemplates.length === 0 || artifactTemplates.includes(normalizedTemplate);
   });
   const isArtifactEnabled = (artifact: ArtifactTypeDefinition) => {
     const entry = data.artifacts_config?.[artifact.id];
@@ -147,6 +155,18 @@ export default function AgentConfigForm({
       [artifact.id]: {
         ...(data.artifacts_config?.[artifact.id] || {}),
         enabled: !isArtifactEnabled(artifact),
+      },
+    });
+  };
+  const updateArtifactOption = (artifact: ArtifactTypeDefinition, optionId: string, value: any) => {
+    onChange('artifacts_config', {
+      ...(data.artifacts_config || {}),
+      [artifact.id]: {
+        ...(data.artifacts_config?.[artifact.id] || {}),
+        options: {
+          ...(data.artifacts_config?.[artifact.id]?.options || {}),
+          [optionId]: value,
+        },
       },
     });
   };
@@ -575,7 +595,7 @@ export default function AgentConfigForm({
         </div>
       )}
 
-      {data.agent_template === 'astrology_lalkitab' && (
+      {isLalKitabTemplate(data.agent_template) && (
         <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
           <h3 className="text-sm font-semibold text-gray-900">LalKitab Launch Notes</h3>
           <p className="mt-1 text-xs leading-5 text-gray-500">
@@ -585,7 +605,7 @@ export default function AgentConfigForm({
         </div>
       )}
 
-      {applicableArtifacts.length > 0 && (
+      {(artifactQuery.isPending || artifactQuery.isError || isLalKitabTemplate(data.agent_template) || applicableArtifacts.length > 0) && (
         <div className="rounded-md border border-gray-200 bg-white p-4">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -595,21 +615,74 @@ export default function AgentConfigForm({
                 to a plain-text rendering inside the answer.
               </p>
             </div>
-            <span className="shrink-0 rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
-              {applicableArtifacts.filter(isArtifactEnabled).length} of {applicableArtifacts.length} enabled
-            </span>
+            {!artifactQuery.isPending && !artifactQuery.isError && (
+              <span className="shrink-0 rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
+                {applicableArtifacts.filter(isArtifactEnabled).length} of {applicableArtifacts.length} enabled
+              </span>
+            )}
           </div>
-          <div className="mt-3 space-y-3">
-            {applicableArtifacts.map((artifact) => (
-              <Switch
-                key={artifact.id}
-                checked={isArtifactEnabled(artifact)}
-                onChange={() => toggleArtifact(artifact)}
-                label={artifact.name}
-                description={artifact.description || ''}
-              />
-            ))}
-          </div>
+          {artifactQuery.isPending && (
+            <p className="mt-3 text-sm text-gray-600" role="status">Loading chat artifacts…</p>
+          )}
+          {artifactQuery.isError && (
+            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-800" role="alert">
+              <p>Chat artifacts could not be loaded. {artifactQuery.error instanceof Error ? artifactQuery.error.message : 'Please try again.'}</p>
+              <button
+                type="button"
+                onClick={() => artifactQuery.refetch()}
+                className="mt-2 rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-100"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {!artifactQuery.isPending && !artifactQuery.isError && applicableArtifacts.length === 0 && isLalKitabTemplate(data.agent_template) && (
+            <p className="mt-3 text-sm text-gray-600">No chat artifact types are available for this Lal Kitab template.</p>
+          )}
+          {!artifactQuery.isPending && !artifactQuery.isError && applicableArtifacts.length > 0 && (
+            <div className="mt-3 space-y-3">
+              {applicableArtifacts.map((artifact) => {
+                const properties = artifact.options_schema?.properties || {};
+                const configuredOptions = data.artifacts_config?.[artifact.id]?.options || {};
+                return (
+                  <div key={artifact.id} className="space-y-2">
+                    <Switch
+                      checked={isArtifactEnabled(artifact)}
+                      onChange={() => toggleArtifact(artifact)}
+                      label={artifact.name}
+                      description={artifact.description || ''}
+                    />
+                    {Object.entries(properties).map(([optionId, schema]) => {
+                      const option = schema as { type?: string; enum?: unknown[]; default?: unknown; description?: string };
+                      const value = configuredOptions[optionId]
+                        ?? artifact.default_options?.[optionId]
+                        ?? option.default
+                        ?? '';
+                      if (!Array.isArray(option.enum) || option.enum.length === 0) {
+                        return null;
+                      }
+                      return (
+                        <label key={optionId} className="ml-3 block max-w-sm">
+                          <span className="text-xs font-medium text-gray-700">{optionId}</span>
+                          <select
+                            aria-label={`${artifact.name} ${optionId}`}
+                            className={`${inputClass} mt-1`}
+                            value={String(value)}
+                            onChange={(event) => updateArtifactOption(artifact, optionId, event.target.value)}
+                          >
+                            {option.enum.map((item) => (
+                              <option key={String(item)} value={String(item)}>{String(item)}</option>
+                            ))}
+                          </select>
+                          {option.description && <span className="mt-1 block text-xs text-gray-500">{option.description}</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

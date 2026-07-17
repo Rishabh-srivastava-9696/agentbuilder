@@ -31,7 +31,8 @@ settings = Settings()
 WIDGET_SESSION_TOKEN_TYPE = "widget_session"
 # Conversations are long-lived; tokens can be refreshed via the session endpoint
 # by presenting a still-valid token, which preserves user/conversation identity.
-WIDGET_SESSION_TTL = timedelta(days=7)
+# Keep signed sessions aligned with short-term memory's 72-hour retention.
+WIDGET_SESSION_TTL = timedelta(hours=72)
 
 
 @dataclass(frozen=True)

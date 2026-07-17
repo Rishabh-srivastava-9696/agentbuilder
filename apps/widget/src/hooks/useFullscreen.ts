@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback } from 'react';
  * Handles localStorage persistence and ESC key listener
  */
 export const useFullscreen = () => {
+  const [isMobile, setIsMobile] = useState<boolean>(() => typeof window !== 'undefined' && window.innerWidth < 640);
   // Load initial state from localStorage
   const [isExpanded, setIsExpanded] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -56,15 +57,25 @@ export const useFullscreen = () => {
 
   // Handle window resize - auto-expand on mobile
   useEffect(() => {
-    const handleResize = () => {
-      const isMobile = window.innerWidth < 640;
-      if (isMobile && !isExpanded) {
+    const updateViewport = () => {
+      const mobile = window.innerWidth < 640;
+      setIsMobile(mobile);
+      if (mobile && !isExpanded) {
         setIsExpanded(true);
       }
+      const viewportHeight = window.visualViewport?.height || window.innerHeight;
+      document.documentElement.style.setProperty('--agent-widget-viewport-height', `${Math.round(viewportHeight)}px`);
     };
 
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('scroll', updateViewport);
+    return () => {
+      window.removeEventListener('resize', updateViewport);
+      window.visualViewport?.removeEventListener('resize', updateViewport);
+      window.visualViewport?.removeEventListener('scroll', updateViewport);
+    };
   }, [isExpanded]);
 
   return {
@@ -72,6 +83,6 @@ export const useFullscreen = () => {
     toggleExpanded,
     collapse,
     expand,
-    isMobile: window.innerWidth < 640,
+    isMobile,
   };
 };

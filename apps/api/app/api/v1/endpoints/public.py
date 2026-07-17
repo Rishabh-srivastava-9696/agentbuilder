@@ -5,13 +5,15 @@ Public widget bootstrap endpoints.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, List, Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Header
+from pydantic import BaseModel, Field
 
 from app.connections import connection_manager
 from app.services.commerce_config import is_commerce_agent_config, normalize_commerce_configuration
+from app.auth.widget_session import decode_widget_session
+from .knowledge import _hydrate_product_cards, _product_card_from_data
 
 router = APIRouter()
 
@@ -33,6 +35,12 @@ class PublicBrandResponse(BaseModel):
     logo_url: str | None = None
     website: str | None = None
     updated_at: datetime
+
+
+class PublicCatalogProductsRequest(BaseModel):
+    agent_id: str = Field(..., min_length=1)
+    skus: List[str] = Field(default_factory=list, max_length=50)
+    variant_ids: List[str] = Field(default_factory=list, max_length=50)
 
 
 def _system_db():
@@ -157,3 +165,57 @@ async def get_public_brand(brand_id: str):
         website=brand.get("website"),
         updated_at=brand["updated_at"],
     )
+
+
+@router.post("/catalog/products")
+async def get_public_catalog_products(
+    request: PublicCatalogProductsRequest,
+    x_widget_session: Optional[str] = Header(None),
+):
+    """Hydrate legacy product references using the signed public widget session."""
+    session = decode_widget_session(x_widget_session, expected_agent_id=request.agent_id)
+    if session is None:
+        raise HTTPException(status_code=401, detail="A valid widget session token is required")
+    if not request.skus and not request.variant_ids:
+        return {"success": True, "products": [], "count": 0}
+
+    db = _system_db()
+    agent = await db.agents.find_one({"id": request.agent_id, "status": "active"}, {"brand_slug": 1, "configuration": 1})
+    if not agent or not _widget_enabled(agent.get("configuration") or {}):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    brand_slug = agent.get("brand_slug")
+    if not brand_slug:
+        raise HTTPException(status_code=400, detail="Agent has no brand catalog")
+
+    try:
+        brand_db = connection_manager.get_brand_db(brand_slug)
+        collection = brand_db["knowledge_base"]
+        clauses = []
+        if request.skus:
+            clauses.extend([
+                {"product_data.sku": {"$in": request.skus}},
+                {"product_data.variant_sku": {"$in": request.skus}},
+            ])
+        if request.variant_ids:
+            clauses.extend([
+                {"product_data.variant_id": {"$in": request.variant_ids}},
+                {"product_data.id": {"$in": request.variant_ids}},
+            ])
+        cursor = collection.find({"content_type": "product", "$or": clauses})
+        matched = []
+        async for document in cursor:
+            product_data = document.get("product_data") or {}
+            if product_data:
+                matched.append(_product_card_from_data(product_data))
+        retrieval = ((agent.get("configuration") or {}).get("commerce") or {}).get("retrieval") or {}
+        try:
+            max_variants = max(1, min(int(retrieval.get("max_variants_per_card") or 100), 500))
+        except (TypeError, ValueError):
+            max_variants = 100
+        products = await _hydrate_product_cards(collection, matched, max_variants=max_variants)
+        return {"success": True, "products": products, "count": len(products)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("public_catalog_hydration_failed", agent_id=request.agent_id, error=str(exc))
+        raise HTTPException(status_code=500, detail="Unable to hydrate catalog products")

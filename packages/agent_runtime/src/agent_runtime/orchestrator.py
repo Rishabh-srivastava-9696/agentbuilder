@@ -20,6 +20,26 @@ SAFE_FALLBACK_MESSAGE = (
     "or contact the brand team for help."
 )
 
+
+def _is_product_query(query: str) -> bool:
+    lowered = (query or "").lower()
+    return any(term in lowered for term in (
+        "product", "products", "item", "items", "bracelet", "earring", "ring", "speaker",
+        "shoe", "dress", "price", "buy", "shop", "catalog", "stock", "variant",
+    ))
+
+
+def _dedupe_products(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: set[str] = set()
+    unique: List[Dict[str, Any]] = []
+    for product in products:
+        key = str(product.get("variant_id") or product.get("product_group_id") or product.get("id") or product.get("sku") or product.get("name") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(product)
+    return unique
+
 @dataclass
 class AgentResult:
     answer: str
@@ -232,11 +252,18 @@ Output JSON Format:
         
         if self.critic:
             try:
+                catalog_products = []
+                for tool_result in results.values():
+                    metadata = getattr(tool_result, "metadata", {}) or {}
+                    candidates = metadata.get("validated_products") or metadata.get("products") or metadata.get("active_product_focus") or []
+                    if isinstance(candidates, list):
+                        catalog_products.extend(candidate for candidate in candidates if isinstance(candidate, dict))
+                catalog_products = _dedupe_products(catalog_products)
                 # Use critic to validate the synthesized answer
                 validation_result = await self.critic.validate_response(
                     response=final_answer,
-                    query_intent="general",  # Could be enhanced with intent detection
-                    catalog_products=None,   # Would need to extract from tool results
+                    query_intent="product" if _is_product_query(query) else "general",
+                    catalog_products=catalog_products or None,
                     catalog_dealers=None
                 )
                 
@@ -274,8 +301,8 @@ Output JSON Format:
                         # Re-validate the retried answer
                         retry_validation = await self.critic.validate_response(
                             response=final_answer,
-                            query_intent="general",
-                            catalog_products=None,
+                            query_intent="product" if _is_product_query(query) else "general",
+                            catalog_products=catalog_products or None,
                             catalog_dealers=None
                         )
                         
@@ -304,6 +331,11 @@ Output JSON Format:
                 "steps_executed": len(results),
                 "validation_passed": validation_passed,
                 "tool_results": results,  # Expose tool results for product/dealer extraction
+                "validated_product_ids": [
+                    str(product.get("variant_id") or product.get("product_group_id") or product.get("id") or product.get("sku"))
+                    for product in catalog_products
+                    if isinstance(product, dict)
+                ] if 'catalog_products' in locals() else [],
                 **validation_metadata
             }
         )
@@ -325,6 +357,17 @@ Output JSON Format:
     async def _fallback_direct_answer(self, query: str, reason: str) -> AgentResult:
         """Fallback chain: direct answer first, then safe canned escalation."""
         logger.warning("agent_fallback_direct_answer", reason=reason)
+        if _is_product_query(query):
+            return AgentResult(
+                answer="I couldn’t find a verified matching product in the catalog right now. Please try a more specific product or category.",
+                metadata={
+                    "fallback": True,
+                    "fallback_stage": "catalog_grounding",
+                    "fallback_reason": reason,
+                    "validated_product_ids": [],
+                },
+                success=True,
+            )
         try:
             response = await self.llm.generate(
                 f"{self.system_prompt}\n\n"
