@@ -3,7 +3,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import Settings
-from app.services.catalog_service import _normalize_schema_org, _normalize_shopify, _normalize_woocommerce
+from app.services.catalog_service import (
+    _fetch_shopify_default_currency,
+    _normalize_schema_org,
+    _normalize_shopify,
+    _normalize_woocommerce,
+    normalize_currency_code,
+    normalize_shopify_store_url,
+)
 from app.services.knowledge_service import KnowledgeService
 
 
@@ -130,12 +137,120 @@ def test_catalog_normalization_marks_missing_or_configured_currency():
     assert schema_items[0]["currency_source"] == "missing"
 
 
+def test_shopify_store_currency_is_authoritative_and_identity_is_stable():
+    payload = {
+        "products": [{
+            "id": 44,
+            "handle": "linen-shirt",
+            "title": "Linen Shirt",
+            "variants": [{"id": 99, "sku": "LINEN-M", "price": "12.50", "currency": "USD"}],
+        }]
+    }
+
+    first = _normalize_shopify(payload, base_url="https://celavilifestyle.com", shopify_currency="INR", fallback_currency="EUR")
+    second = _normalize_shopify(payload, base_url="https://celavilifestyle.com", shopify_currency="INR", fallback_currency="EUR")
+
+    assert first[0]["currency"] == "INR"
+    assert first[0]["currency_source"] == "shopify_store"
+    assert first[0]["source_key"] == second[0]["source_key"] == "shopify:44:99"
+    assert first[0]["price"] == 1250
+    assert first[0]["price_unit"] == "minor"
+
+
+def test_shopify_url_and_explicit_currency_validation():
+    assert normalize_shopify_store_url("celavilifestyle.com") == "https://celavilifestyle.com"
+    assert normalize_shopify_store_url("https://store.myshopify.com/") == "https://store.myshopify.com"
+    assert normalize_currency_code(" inr ") == "INR"
+    with pytest.raises(ValueError):
+        normalize_shopify_store_url("https://celavilifestyle.com/products")
+    for private_url in (
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://10.0.0.8",
+        "http://169.254.169.254",
+        "http://[::1]",
+        "http://shop.internal",
+    ):
+        with pytest.raises(ValueError):
+            normalize_shopify_store_url(private_url)
+    with pytest.raises(ValueError):
+        normalize_currency_code("USDOLLAR")
+
+
+@pytest.mark.asyncio
+async def test_authenticated_shopify_store_currency_success_and_failure():
+    class Response:
+        def __init__(self, status_code, payload, headers=None):
+            self.status_code = status_code
+            self._payload = payload
+            self.headers = headers or {}
+            self.is_redirect = status_code in {301, 302, 303, 307, 308}
+
+        def json(self):
+            return self._payload
+
+    class Client:
+        def __init__(self, response):
+            self.response = response
+            self.calls = []
+
+        async def get(self, url, headers):
+            self.calls.append((url, headers))
+            return self.response
+
+    class SequenceClient:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+            self.calls = []
+
+        async def get(self, url, headers):
+            self.calls.append((url, headers))
+            return next(self.responses)
+
+    client = Client(Response(200, {"shop": {"currency": "inr"}}))
+    assert await _fetch_shopify_default_currency(client, "https://celavilifestyle.com", {"X-Shopify-Access-Token": "secret"}) == "INR"
+    assert client.calls[0][0].endswith("/admin/api/2024-01/shop.json")
+
+    redirected = SequenceClient([
+        Response(302, {}, {"location": "https://celavilifestyle.myshopify.com/admin/api/2024-01/shop.json"}),
+        Response(200, {"shop": {"currency": "GBP"}}),
+    ])
+    assert await _fetch_shopify_default_currency(redirected, "https://celavilifestyle.com", {"X-Shopify-Access-Token": "secret"}) == "GBP"
+    assert len(redirected.calls) == 2
+
+    unsafe_redirect = SequenceClient([
+        Response(302, {}, {"location": "http://127.0.0.1/admin/api/2024-01/shop.json"}),
+        Response(200, {"shop": {"currency": "GBP"}}),
+    ])
+    assert await _fetch_shopify_default_currency(unsafe_redirect, "https://celavilifestyle.com", {"X-Shopify-Access-Token": "secret"}) is None
+    assert len(unsafe_redirect.calls) == 1
+
+    cross_store_redirect = SequenceClient([
+        Response(302, {}, {"location": "https://another-store.myshopify.com/admin/api/2024-01/shop.json"}),
+        Response(200, {"shop": {"currency": "GBP"}}),
+    ])
+    assert await _fetch_shopify_default_currency(cross_store_redirect, "https://celavilifestyle.com", {"X-Shopify-Access-Token": "secret"}) is None
+    assert len(cross_store_redirect.calls) == 1
+
+    failed = Client(Response(403, {}))
+    assert await _fetch_shopify_default_currency(failed, "https://celavilifestyle.com", {"X-Shopify-Access-Token": "secret"}) is None
+
+    public = Client(Response(200, {"shop": {"currency": "USD"}}))
+    assert await _fetch_shopify_default_currency(public, "https://celavilifestyle.com", {}) is None
+    assert public.calls == []
+
+
 class FakeUpsertCollection:
     def __init__(self):
         self.upserts = []
+        self.update_many_calls = []
 
     async def update_one(self, query, update, upsert=False):
         self.upserts.append((query, update, upsert))
+
+    async def update_many(self, query, update):
+        self.update_many_calls.append((query, update))
+        return SimpleNamespace(modified_count=2)
 
 
 class ProductCurrencyKnowledgeService(KnowledgeService):
@@ -206,3 +321,54 @@ async def test_product_knowledge_does_not_hardcode_currency_when_missing():
     assert "INR" not in document["content"]
     assert document["product_data"]["currency"] is None
     assert document["product_data"]["currency_source"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_shopify_sync_uses_source_identity_and_marks_only_source_rows_inactive():
+    service = ProductCurrencyKnowledgeService()
+
+    async def no_connection(_brand_id):
+        return None
+
+    async def scope(_identifier):
+        return {"brand_id": "brand-1", "brand_slug": "brand-slug", "aliases": ["brand-1", "brand-slug"]}
+
+    service._ensure_connection = no_connection
+    service._resolve_brand_scope = scope
+    await service.job_store.set("source-job", {"status": "pending"})
+
+    await service.sync_shopify_catalog(
+        "knowledge-job",
+        [SimpleNamespace(
+            sku="LINEN-M",
+            name="Linen Shirt",
+            price=1250,
+            price_unit="minor",
+            currency="INR",
+            currency_source="shopify_store",
+            category="Shirts",
+            image_url=None,
+            product_url="https://celavilifestyle.com/products/linen-shirt",
+            in_stock=True,
+            features=[],
+            source_type="shopify",
+            source_product_id="44",
+            source_variant_id="99",
+            source_key="shopify:44:99",
+        )],
+        "brand-1",
+        source_url="https://celavilifestyle.com",
+        source_job_id="source-job",
+    )
+
+    query, document, upsert = service.collection.upserts[0]
+    assert query["doc_id"] == "brand-1_product_shopify:44:99"
+    assert upsert is True
+    assert document["$set"]["metadata"]["catalog_source"]["source_key"] == "shopify:44:99"
+    assert document["$set"]["product_data"]["currency_source"] == "shopify_store"
+    assert document["$set"]["product_data"]["price_unit"] == "minor"
+    assert "Price: INR 12.50" in document["$set"]["content"]
+    stale_query, stale_update = service.collection.update_many_calls[0]
+    assert stale_query["metadata.catalog_source.type"] == "shopify"
+    assert stale_query["metadata.catalog_source.source_key"] == {"$nin": ["shopify:44:99"]}
+    assert stale_update["$set"]["product_data.in_stock"] is False

@@ -78,6 +78,7 @@ export interface Message {
   products?: ProductData[];  // Phase 5: Product cards
   dealers?: DealerData[];    // Phase 5: Dealer cards
   metadata?: Record<string, any>;
+  commerce?: CommerceMetadata;
   feedback?: 'up' | 'down';
   activitySteps?: ActivityStep[];  // Live "what happened in the background" trace
 }
@@ -133,11 +134,15 @@ export interface ProductVariantData {
   variant_title?: string;
   variant_options?: Record<string, string>;
   price?: number;
+  /** Canonical minor-unit price. Legacy price is accepted by adapters only. */
+  price_minor?: number;
+  price_unit?: 'minor';
   currency?: string;
-  currency_source?: string;
+  currency_source?: CurrencySource;
   image_url?: string;
   image?: string;
   product_url?: string;
+  url?: string;
   variant_url?: string;
   in_stock?: boolean;
   is_default?: boolean;
@@ -150,14 +155,18 @@ export interface ProductData {
   handle?: string;
   name: string;
   price?: number;
+  /** Canonical minor-unit price. Legacy price is accepted by adapters only. */
+  price_minor?: number;
+  price_unit?: 'minor';
   currency?: string;
-  currency_source?: string;
+  currency_source?: CurrencySource;
   category?: string;
   in_stock?: boolean;
   features?: string[];
   image_url?: string;
   image?: string;
   product_url?: string;
+  url?: string;
   description?: string;
   has_variants?: boolean;
   variant_count?: number;
@@ -170,6 +179,19 @@ export interface ProductData {
   variant_options?: Record<string, string>;
   variant_url?: string;
   variants?: ProductVariantData[];
+}
+
+export type CurrencySource = 'shopify_store' | 'catalog' | 'presentment' | 'configured_default' | 'missing';
+
+export interface CommerceCart {
+  cart_id?: string;
+  checkout_url?: string;
+  cart_lines?: Array<Record<string, unknown>>;
+}
+
+export interface CommerceMetadata {
+  cart?: CommerceCart;
+  validated_product_ids?: string[];
 }
 
 // Phase 5: Dealer card data
@@ -231,6 +253,7 @@ export interface StreamingMessage {
   products?: ProductData[];  // Phase 5: Product cards in metadata
   dealers?: DealerData[];    // Phase 5: Dealer cards in metadata
   metadata?: Record<string, any>;
+  commerce?: CommerceMetadata;
   timestamp?: string;
 }
 

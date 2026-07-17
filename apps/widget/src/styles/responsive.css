@@ -19,7 +19,8 @@
     right: 0 !important;
     bottom: 0 !important;
     width: 100vw !important;
-    height: 100vh !important;
+    height: var(--agent-widget-viewport-height, 100dvh) !important;
+    max-height: 100dvh !important;
     z-index: 9999 !important;
     border-radius: 0 !important;
   }
@@ -27,6 +28,12 @@
   .widget-container {
     bottom: 16px;
     right: 16px;
+  }
+}
+
+@supports not (height: 100dvh) {
+  @media (max-width: 639px) {
+    .widget-overlay { height: 100vh !important; }
   }
 }
 
@@ -58,7 +65,7 @@
     right: 0 !important;
     bottom: 0 !important;
     width: 100vw !important;
-    height: 100vh !important;
+    height: 100dvh !important;
     border-radius: 0 !important;
     transform: none !important;
   }

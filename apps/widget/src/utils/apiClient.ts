@@ -23,6 +23,8 @@ const mergeStreamingMetadata = (messageData: Partial<Message>, chunk: StreamingM
   if (chunk.products?.length) messageData.products = chunk.products;
   if (chunk.dealers?.length) messageData.dealers = chunk.dealers;
   if (chunk.metadata) messageData.metadata = { ...(messageData.metadata || {}), ...chunk.metadata };
+  if (chunk.commerce) messageData.commerce = { ...(messageData.commerce || {}), ...chunk.commerce };
+  if (chunk.metadata?.cart && !messageData.commerce) messageData.commerce = { cart: chunk.metadata.cart };
 };
 
 export class APIClient {
@@ -36,6 +38,18 @@ export class APIClient {
   /** Hold the signed session token used to authorize message calls. */
   setSessionToken(token: string | undefined): void {
     this.sessionToken = token;
+  }
+
+  getSessionToken(): string | undefined {
+    return this.sessionToken;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  setBaseUrl(baseUrl: string): void {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
   /**
@@ -59,6 +73,28 @@ export class APIClient {
       userId: data.user_id,
       sessionToken: data.session_token,
     };
+  }
+
+  async getHistory(limit = 100): Promise<Message[]> {
+    const response = await fetch(`${this.baseUrl}/api/v1/messages/history?limit=${limit}`, {
+      headers: {
+        ...(this.sessionToken ? { 'X-Widget-Session': this.sessionToken } : {}),
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to load conversation history: HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    return (data.messages || []).map((message: Record<string, any>) => this.formatMessage({
+      id: message.message_id,
+      content: message.content,
+      role: message.role,
+      timestamp: message.timestamp,
+      metadata: message.metadata,
+      products: message.metadata?.products || [],
+      dealers: message.metadata?.dealers || [],
+      commerce: message.metadata?.commerce || (message.metadata?.cart ? { cart: message.metadata.cart } : undefined),
+    }));
   }
 
   async sendMessage(
@@ -226,6 +262,7 @@ export class APIClient {
             products: messageData.products || [],  // Phase 5: Product cards
             dealers: messageData.dealers || [],    // Phase 5: Dealer cards
             metadata: messageData.metadata,
+            commerce: messageData.commerce,
           };
           
           isDev && console.log('[APIClient] Resolving with final message:', finalMessage);
@@ -249,6 +286,7 @@ export class APIClient {
       products: data.products || [],  // Phase 5: Product cards
       dealers: data.dealers || [],    // Phase 5: Dealer cards
       metadata: data.metadata,
+      commerce: data.commerce || (data.metadata?.cart ? { cart: data.metadata.cart } : undefined),
     };
   }
 

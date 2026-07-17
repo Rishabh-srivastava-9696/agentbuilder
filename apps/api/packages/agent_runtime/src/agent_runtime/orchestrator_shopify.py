@@ -7,11 +7,25 @@ import re
 import asyncio
 import structlog
 import inspect
+from urllib.parse import urlsplit, urlunsplit
 from typing import Dict, Any, List, Optional, Tuple
 from .orchestrator import Orchestrator, AgentResult
 from tools.types import ToolResult
 
 logger = structlog.get_logger(__name__)
+
+
+def _safe_checkout_url(value: Any) -> Optional[str]:
+    """Only retain absolute HTTPS checkout links; MCP validates the host."""
+    if value in (None, ""):
+        return None
+    try:
+        parts = urlsplit(str(value))
+        if parts.scheme != "https" or not parts.hostname:
+            return None
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+    except Exception:
+        return None
 
 class ShopifyOrchestrator(Orchestrator):
     """
@@ -93,9 +107,11 @@ class ShopifyOrchestrator(Orchestrator):
     def _initialize_session_state(self, chat_history: Optional[List[Dict]], context: Optional[Dict]):
         """Load persistent state and reconstruct conversation history."""
         session_state = (context or {}).get("session_state", {})
+        self.commerce_config = (context or {}).get("commerce") or {}
         self.cart_id = session_state.get("cart_id")
-        self.checkout_url = session_state.get("checkout_url")
-        self.cart_lines = session_state.get("cart_lines", [])
+        self.checkout_url = _safe_checkout_url(session_state.get("checkout_url"))
+        saved_lines = session_state.get("cart_lines", [])
+        self.cart_lines = saved_lines if isinstance(saved_lines, list) else []
         self.captured_ids = session_state.get("captured_ids", {})
         self.last_searched = session_state.get("last_searched", {})
         self.active_product_focus = session_state.get("active_product_focus", [])
@@ -107,7 +123,6 @@ class ShopifyOrchestrator(Orchestrator):
         self.resolved_reference = None
         self.pending_clarification_response = None
         self.prompt_runtime_context = (context or {}).get("prompt_runtime", {})
-        self.commerce_config = (context or {}).get("commerce") or {}
         self.active_product_focus = self._normalize_focus_products(self.active_product_focus)
         self.product_reference_map = self._build_product_reference_map(self.active_product_focus)
         
@@ -273,7 +288,7 @@ class ShopifyOrchestrator(Orchestrator):
 
         product = resolved.get("product") or {}
         title = str(product.get("name") or product.get("title") or "this product")
-        variant_id = str(product.get("variant_id") or product.get("id") or "")
+        variant_id = str(product.get("variant_id") or "")
         if not variant_id:
             self.pending_clarification_response = f"I found {title}, but I do not have a valid variant ID to add it to the cart. Please choose another product."
             return None
@@ -401,7 +416,7 @@ class ShopifyOrchestrator(Orchestrator):
             "confidence": confidence,
             "reason": reason,
             "product": product,
-            "variant_id": product.get("variant_id") or product.get("id"),
+            "variant_id": product.get("variant_id"),
             "product_name": product.get("name") or product.get("title"),
         }
 
@@ -440,7 +455,9 @@ class ShopifyOrchestrator(Orchestrator):
             "price", "prices", "cost", "available", "stock", "in stock", "buy", "add",
             "shop", "store", "catalog", "under", "below", "less than", "within", "budget",
         }
-        if not any(term in lowered for term in commerce_terms):
+        meaningful_tokens = [token for token in self._tokens(lowered) if token not in {"what", "which", "where", "when", "why", "how", "can", "could", "would"}]
+        is_bare_catalog_noun = len(meaningful_tokens) == 1
+        if not any(term in lowered for term in commerce_terms) and not is_bare_catalog_noun:
             return None
 
         constraints = self._extract_shopping_constraints(last_user_msg)
@@ -681,19 +698,23 @@ class ShopifyOrchestrator(Orchestrator):
         metadata = result.metadata or {}
         
         # Capture Cart ID
-        cart = metadata.get("cart")
+        commerce_action = metadata.get("commerce_action") or {}
+        cart = commerce_action.get("cart") if isinstance(commerce_action, dict) else None
+        cart = cart if isinstance(cart, dict) else metadata.get("cart")
         if cart and isinstance(cart, dict):
-            new_id = cart.get("cart_id") or cart.get("id")
+            new_id = cart.get("cart_id") or cart.get("cartId") or cart.get("id")
             if new_id:
                 self.cart_id = str(new_id)
             
             # Capture checkout URL
-            new_url = cart.get("checkout_url") or cart.get("checkoutUrl")
+            new_url = _safe_checkout_url(cart.get("checkout_url") or cart.get("checkoutUrl"))
             if new_url:
-                self.checkout_url = str(new_url)
+                self.checkout_url = new_url
             
             # Store full lines for prompt injection
-            self.cart_lines = cart.get("lines") or cart.get("line_items") or []
+            new_lines = cart.get("cart_lines") or cart.get("lines") or cart.get("line_items")
+            if isinstance(new_lines, list):
+                self.cart_lines = new_lines
 
         # Capture Product/Variant IDs for future reference
         products = metadata.get("products", [])
@@ -731,7 +752,7 @@ class ShopifyOrchestrator(Orchestrator):
         for p in products:
             if not isinstance(p, dict): continue
             name = str(p.get("name") or p.get("title") or "").lower()
-            v_id = p.get("variant_id") or p.get("id")
+            v_id = p.get("variant_id")
             if name and v_id:
                 gid = str(v_id)
                 self.captured_ids[name] = gid
@@ -781,7 +802,7 @@ class ShopifyOrchestrator(Orchestrator):
 
     def _normalize_focus_product(self, product: Dict[str, Any], original_rank: int) -> Dict[str, Any]:
         name = str(product.get("name") or product.get("title") or product.get("sku") or f"Product {original_rank}")
-        variant_id = str(product.get("variant_id") or product.get("id") or product.get("product_id") or "")
+        variant_id = str(product.get("variant_id") or "")
         currency, currency_source = self._normalize_product_currency(product.get("currency"), product.get("currency_source"))
         normalized = dict(product)
         normalized.update({
@@ -789,8 +810,8 @@ class ShopifyOrchestrator(Orchestrator):
             "original_rank": original_rank,
             "name": name,
             "title": product.get("title") or name,
-            "variant_id": variant_id,
-            "id": product.get("id") or variant_id,
+            "variant_id": variant_id or None,
+            "id": product.get("id") or product.get("product_id") or variant_id or None,
             "price": product.get("price"),
             "currency": currency,
             "currency_source": currency_source,
@@ -804,6 +825,8 @@ class ShopifyOrchestrator(Orchestrator):
         default_currency = str(self.commerce_config.get("default_currency") or "").strip().upper() or None
         policy = str(self.commerce_config.get("currency_policy") or "catalog_first_config_fallback").strip().lower()
         catalog_currency = str(currency).strip().upper() if currency not in (None, "") and str(currency).strip() else None
+        if catalog_currency and str(currency_source or "").strip().lower() == "shopify_store":
+            return catalog_currency, "shopify_store"
 
         if policy == "default_only":
             if default_currency:
@@ -822,7 +845,42 @@ class ShopifyOrchestrator(Orchestrator):
         return self._normalize_focus_products(products)
 
     def _filter_products_for_constraints(self, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return products
+        constraints = self.last_constraints if isinstance(self.last_constraints, dict) else {}
+        product_type = str(constraints.get("product_type") or "").strip().lower()
+        negative_terms = [str(term).strip().lower() for term in constraints.get("negative_constraints") or [] if str(term).strip()]
+        budget = constraints.get("budget") if isinstance(constraints.get("budget"), dict) else {}
+        budget_max = budget.get("amount")
+        require_stock = bool(constraints.get("in_stock") or constraints.get("availability") in {"in_stock", "available"})
+
+        def numeric_price(value: Any) -> Optional[float]:
+            try:
+                number = float(value)
+                if budget_max is not None and number > float(budget_max) and number / 100 <= float(budget_max):
+                    return number / 100
+                return number
+            except (TypeError, ValueError):
+                return None
+
+        filtered: List[Dict[str, Any]] = []
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            searchable = " ".join(
+                str(product.get(key) or "")
+                for key in ("name", "title", "category", "product_type", "description", "tags", "sku")
+            ).lower()
+            if product_type and product_type not in searchable:
+                continue
+            if any(term in searchable for term in negative_terms):
+                continue
+            if require_stock and product.get("in_stock") is not True:
+                continue
+            if budget_max is not None:
+                price = numeric_price(product.get("price"))
+                if price is None or price > float(budget_max):
+                    continue
+            filtered.append(product)
+        return filtered
 
     def _build_product_reference_map(self, products: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         reference_map: Dict[str, Dict[str, Any]] = {}
@@ -922,7 +980,7 @@ class ShopifyOrchestrator(Orchestrator):
             lines = ["\n### ACTIVE PRODUCT FOCUS (MOST RECENT VALIDATED PRODUCTS):\n"]
             for product in self.active_product_focus[:5]:
                 name = product.get("name") or product.get("title")
-                gid = product.get("variant_id") or product.get("id")
+                gid = product.get("variant_id")
                 price = self._format_price(product.get("price"), product.get("currency"))
                 lines.append(f"- #{product.get('rank')}: {name} (ID: {gid}, price: {price})\n")
             lines.append("--> If the user says 'this', 'it', 'that product', or gives an ordinal like 'second one', resolve against THIS ordered list.\n")

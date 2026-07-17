@@ -131,8 +131,13 @@ def _normalize_commerce_product_currency(product: dict, agent_config: dict | Non
         if product.get("currency") not in (None, "") and str(product.get("currency")).strip()
         else None
     )
+    catalog_source = str(product.get("currency_source") or "").strip().lower()
 
     normalized = dict(product)
+    if catalog_currency and catalog_source == "shopify_store":
+        normalized["currency"] = catalog_currency
+        normalized["currency_source"] = "shopify_store"
+        return normalized
     if policy == "default_only":
         normalized["currency"] = default_currency
         normalized["currency_source"] = "commerce.default_currency" if default_currency else "missing"
@@ -154,7 +159,69 @@ def _normalize_commerce_product_currency(product: dict, agent_config: dict | Non
 
 
 def _normalize_commerce_products_currency(products: list[dict], agent_config: dict | None) -> list[dict]:
-    return [_normalize_commerce_product_currency(product, agent_config) for product in products]
+    return [_canonicalize_commerce_product(_normalize_commerce_product_currency(product, agent_config)) for product in products]
+
+
+def _canonicalize_commerce_product(product: dict) -> dict:
+    """Normalize provider aliases into the widget's explicit minor-unit contract."""
+    if not isinstance(product, dict):
+        return product
+    normalized = dict(product)
+    if normalized.get("price_minor") is None and normalized.get("price") not in (None, ""):
+        try:
+            normalized["price_minor"] = int(round(float(normalized["price"])))
+        except (TypeError, ValueError):
+            normalized["price_minor"] = None
+    normalized["price_unit"] = "minor"
+    normalized["image_url"] = normalized.get("image_url") or normalized.get("image")
+    normalized["product_url"] = normalized.get("product_url") or normalized.get("url")
+    if normalized.get("currency_source") == "product":
+        normalized["currency_source"] = "catalog"
+    variants = normalized.get("variants")
+    if isinstance(variants, list):
+        normalized["variants"] = [_canonicalize_commerce_product(variant) for variant in variants if isinstance(variant, dict)]
+    return normalized
+
+
+def _safe_commerce_cart(
+    agent_metadata: dict,
+    tool_results: dict,
+    previous: Optional[dict] = None,
+    allowed_shop_url: Optional[str] = None,
+) -> Optional[dict]:
+    """Build one safe cart shape for sync, streaming, and persisted history."""
+    state = dict(previous or {})
+    for key in ("cart_id", "checkout_url", "cart_lines"):
+        if agent_metadata.get(key) not in (None, ""):
+            state[key] = agent_metadata[key]
+    for tool_result in tool_results.values() if isinstance(tool_results, dict) else []:
+        metadata = getattr(tool_result, "metadata", {}) or {}
+        action = metadata.get("commerce_action") if isinstance(metadata.get("commerce_action"), dict) else {}
+        cart = action.get("cart") if isinstance(action.get("cart"), dict) else metadata.get("cart")
+        if not isinstance(cart, dict):
+            continue
+        for target, keys in {
+            "cart_id": ("cart_id", "cartId", "id"),
+            "checkout_url": ("checkout_url", "checkoutUrl"),
+            "cart_lines": ("cart_lines", "lines", "line_items"),
+        }.items():
+            for key in keys:
+                if cart.get(key) not in (None, ""):
+                    state[target] = cart[key]
+                    break
+    if state.get("checkout_url"):
+        try:
+            parsed = urlsplit(str(state["checkout_url"]))
+            allowed_host = urlsplit(str(allowed_shop_url)).hostname if allowed_shop_url else None
+            if parsed.scheme != "https" or not parsed.hostname or (allowed_host and parsed.hostname != allowed_host):
+                state["checkout_url"] = None
+            else:
+                state["checkout_url"] = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
+        except Exception:
+            state["checkout_url"] = None
+    if not isinstance(state.get("cart_lines"), list):
+        state["cart_lines"] = []
+    return state if any(state.get(key) for key in ("cart_id", "checkout_url", "cart_lines")) else None
 
 
 def _base_product_url(url: Any) -> Optional[str]:
@@ -2328,6 +2395,14 @@ Rules:
                 saved_cart_id = session_state["cart_id"]
 
             tool_results = agent_metadata.get("tool_results", {})
+            cart_state = _safe_commerce_cart(
+                agent_metadata,
+                tool_results,
+                {"cart_id": saved_cart_id} if saved_cart_id else None,
+                ((self.agent_config or {}).get("shopify") or {}).get("shop_url") or (self.agent_config or {}).get("shopify_shop_url"),
+            )
+            if cart_state and cart_state.get("cart_id"):
+                saved_cart_id = cart_state["cart_id"]
             citations, safe_products, safe_dealers = _extract_tool_result_metadata(tool_results)
             is_commerce_agent = is_commerce_agent_config(self.agent_config or {})
             if is_commerce_agent:
@@ -2363,7 +2438,8 @@ Rules:
                 "search_query": agent_metadata.get("search_query") or agent_metadata.get("last_search_query"),
                 "rerank_results": _sanitize_for_json(agent_metadata.get("rerank_results") or []),
                 "resolved_reference": _sanitize_for_json(agent_metadata.get("resolved_reference") or {}),
-            } if is_commerce_agent or unique_products or unique_dealers else None
+                "cart": _sanitize_for_json(cart_state) if cart_state else None,
+            } if is_commerce_agent or unique_products or unique_dealers or cart_state else None
             if agent_metadata.get("kundali_chart"):
                 response_metadata = {
                     **(response_metadata or {}),
@@ -2396,6 +2472,11 @@ Rules:
                         "capability_scope": agent_metadata.get("capability_scope"),
                         "plan": agent_metadata.get("plan"),
                         "cart_id": saved_cart_id,
+                        "checkout_url": cart_state.get("checkout_url") if cart_state else None,
+                        "cart_lines": cart_state.get("cart_lines") if cart_state else [],
+                        "products": unique_products,
+                        "dealers": unique_dealers,
+                        "response_metadata": response_metadata or {},
                         "captured_ids": agent_metadata.get("captured_ids"),
                         "last_searched": agent_metadata.get("last_searched"),
                         "active_product_focus": agent_metadata.get("active_product_focus"),
@@ -2507,6 +2588,7 @@ Rules:
                 products=unique_products,
                 dealers=unique_dealers,
                 metadata=response_metadata,
+                commerce={"cart": cart_state} if cart_state else None,
             )
 
         except Exception as e:
@@ -3179,6 +3261,15 @@ Rules:
             if not saved_cart_id and session_state.get("cart_id"):
                 saved_cart_id = session_state["cart_id"]
 
+            cart_state = _safe_commerce_cart(
+                agent_metadata,
+                tool_results,
+                {"cart_id": saved_cart_id} if saved_cart_id else None,
+                ((self.agent_config or {}).get("shopify") or {}).get("shop_url") or (self.agent_config or {}).get("shopify_shop_url"),
+            )
+            if cart_state and cart_state.get("cart_id"):
+                saved_cart_id = cart_state["cart_id"]
+
             logger.info("cart_persistence_final_state",
                 saved_cart_id=saved_cart_id,
                 from_session=session_state.get("cart_id"),
@@ -3205,8 +3296,12 @@ Rules:
                         "capability_scope": agent_metadata.get("capability_scope"),
                         "plan": agent_metadata.get("plan"),
                         "cart_id": saved_cart_id,
-                        "checkout_url": agent_metadata.get("checkout_url"),
-                        "cart_lines": agent_metadata.get("cart_lines"),
+                        "checkout_url": cart_state.get("checkout_url") if cart_state else None,
+                        "cart_lines": cart_state.get("cart_lines") if cart_state else [],
+                        "products": _sanitize_for_json(agent_metadata.get("active_product_focus") or []),
+                        "response_metadata": {
+                            "cart": _sanitize_for_json(cart_state) if cart_state else None,
+                        },
                         "captured_ids": agent_metadata.get("captured_ids"),
                         "last_searched": agent_metadata.get("last_searched"),
                         "active_product_focus": agent_metadata.get("active_product_focus"),
@@ -3264,7 +3359,8 @@ Rules:
                 "search_query": agent_metadata.get("search_query") or agent_metadata.get("last_search_query"),
                 "rerank_results": _sanitize_for_json(agent_metadata.get("rerank_results") or []),
                 "resolved_reference": _sanitize_for_json(agent_metadata.get("resolved_reference") or {}),
-            } if is_commerce_agent_config(self.agent_config or {}) or strapi_products or strapi_dealers else None
+                "cart": _sanitize_for_json(cart_state) if cart_state else None,
+            } if is_commerce_agent_config(self.agent_config or {}) or strapi_products or strapi_dealers or cart_state else None
             strapi_assistant_metadata = {
                 "products": strapi_products,
                 "dealers": strapi_dealers,
@@ -3344,11 +3440,12 @@ Rules:
                     "api_context": _sanitize_for_json(agent_metadata.get("api_context") or {}),
                     "rag_context": _sanitize_for_json(agent_metadata.get("rag_context") or {}),
                     "cart": _sanitize_for_json({
-                        "cart_id": saved_cart_id,
-                        "checkout_url": agent_metadata.get("checkout_url"),
-                        "cart_lines": agent_metadata.get("cart_lines"),
+                        "cart_id": cart_state.get("cart_id") if cart_state else saved_cart_id,
+                        "checkout_url": cart_state.get("checkout_url") if cart_state else None,
+                        "cart_lines": cart_state.get("cart_lines") if cart_state else [],
                     }),
                 },
+                commerce={"cart": cart_state} if cart_state else None,
             )
 
             yield StreamingMessageResponse(

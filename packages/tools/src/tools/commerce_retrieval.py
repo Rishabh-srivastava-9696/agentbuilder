@@ -65,6 +65,7 @@ class CommerceIntent:
     budget_currency: Optional[str] = None
     negative_terms: List[str] = field(default_factory=list)
     expanded_terms: List[str] = field(default_factory=list)
+    availability_required: bool = False
 
 
 @dataclass
@@ -125,6 +126,7 @@ class CommerceRetrievalPipeline:
                     budget_currency=intent.budget_currency,
                     negative_terms=intent.negative_terms,
                     expanded_terms=intent.expanded_terms,
+                    availability_required=intent.availability_required,
                 ),
                 product_filters,
                 limit,
@@ -133,7 +135,7 @@ class CommerceRetrievalPipeline:
             valid, invalid_reasons = self._validate_candidates(fused, intent)
             retrieval_context = retry_context
 
-        products = await self._group_variant_products(valid, limit=limit, filters=product_filters)
+        products = await self._group_variant_products(valid, limit=limit, filters=product_filters, intent=intent)
         confidence = self._confidence(products, direct_products, retrieval_products, retrieval_context)
         return CommerceRetrievalResult(
             products=products,
@@ -186,6 +188,13 @@ class CommerceRetrievalPipeline:
                 negative_terms.append(cleaned)
         negative_terms.extend(self._taxonomy_exclusions(product_type))
 
+        for term in re.findall(r"\b(?:not|no|avoid|without)\s+([a-z0-9 -]{2,30})", query.lower()):
+            cleaned = re.sub(r"\b(for|with|and|or|under|below|above|over)\b.*$", "", term).strip()
+            if cleaned:
+                negative_terms.append(cleaned)
+
+        availability_required = bool(re.search(r"\b(in stock|in-stock|available|availability)\b", query.lower()))
+
         terms = self._query_terms(query, product_type)
         expanded_terms = self._taxonomy_expansions(product_type)
         return CommerceIntent(
@@ -196,6 +205,7 @@ class CommerceRetrievalPipeline:
             budget_currency=budget_currency or self.default_currency(),
             negative_terms=sorted(set(negative_terms)),
             expanded_terms=expanded_terms,
+            availability_required=availability_required,
         )
 
     def default_currency(self) -> Optional[str]:
@@ -278,6 +288,8 @@ class CommerceRetrievalPipeline:
                 {f"product_data.{category_field}": {"$regex": pattern, "$options": "i"}},
                 {f"product_data.{product_type_field}": {"$regex": pattern, "$options": "i"}},
                 {f"product_data.{tags_field}": {"$regex": pattern, "$options": "i"}},
+                {"product_data.sku": {"$regex": pattern, "$options": "i"}},
+                {"product_data.handle": {"$regex": pattern, "$options": "i"}},
             ]
 
         cursor = collection.find(
@@ -339,6 +351,8 @@ class CommerceRetrievalPipeline:
             "title": product_data.get("title") or name,
             "description": product_data.get("description") or product_data.get("category") or "",
             "price": product_data.get("price"),
+            "price_minor": product_data.get("price_minor", product_data.get("price")),
+            "price_unit": "minor",
             "currency": currency,
             "currency_source": currency_source,
             "image": product_data.get("image") or product_data.get("image_url"),
@@ -357,6 +371,7 @@ class CommerceRetrievalPipeline:
         *,
         limit: int,
         filters: Optional[Dict[str, Any]] = None,
+        intent: Optional[CommerceIntent] = None,
     ) -> List[Dict[str, Any]]:
         groups: Dict[str, Dict[str, Any]] = {}
         order: List[str] = []
@@ -380,6 +395,10 @@ class CommerceRetrievalPipeline:
             group_products = groups[group_key]["products"]
             selected = self._select_default_variant(group_products)
             group_products = await self._hydrate_variant_group(selected, group_products, filters=filters)
+            if intent is not None:
+                valid_group, _ = self._validate_candidates(group_products, intent)
+                if valid_group:
+                    group_products = valid_group
             group_products = self._ordered_variant_products(group_products, selected)
             grouped = dict(selected)
             variants = [self._variant_from_product(product, selected) for product in group_products]
@@ -551,6 +570,8 @@ class CommerceRetrievalPipeline:
             "variant_title": product.get("variant_title") or label,
             "variant_options": variant_options,
             "price": product.get("price"),
+            "price_minor": product.get("price_minor", product.get("price")),
+            "price_unit": "minor",
             "currency": product.get("currency"),
             "currency_source": product.get("currency_source"),
             "image_url": product.get("image_url") or product.get("image"),
@@ -667,6 +688,9 @@ class CommerceRetrievalPipeline:
             elif intent.terms:
                 if not any(self._term_in_text(term, text) for term in intent.terms):
                     missing.append("query terms")
+
+            if intent.availability_required and product.get("in_stock") is not True:
+                missing.append("in stock")
 
             excluded = [term for term in intent.negative_terms if self._term_in_text(term, text)]
             if excluded:
@@ -806,10 +830,9 @@ class CommerceRetrievalPipeline:
         return entries
 
     def _fallback_product_type(self, query: str) -> Optional[str]:
-        terms = self._query_terms(query, None)
-        if not terms:
-            return None
-        return terms[0]
+        cleaned = self._clean_text(query)
+        terms = [term for term in cleaned.split() if term not in STOPWORDS and not term.isdigit()]
+        return terms[-1] if terms else None
 
     def _query_terms(self, query: str, product_type: Optional[str]) -> List[str]:
         cleaned = self._clean_text(query)
@@ -839,7 +862,7 @@ class CommerceRetrievalPipeline:
     def _product_text(self, product: Dict[str, Any]) -> str:
         taxonomy = self.commerce_config.get("taxonomy") or {}
         fields = [
-            "name", "title", "description", "category", "product_type", "tags",
+            "name", "title", "description", "category", "product_type", "tags", "sku", "handle", "product_group_id",
             taxonomy.get("category_field") or "category",
             taxonomy.get("product_type_field") or "product_type",
             taxonomy.get("tags_field") or "tags",

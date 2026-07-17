@@ -9,6 +9,119 @@ from .types import BaseTool, ToolResult
 logger = structlog.get_logger(__name__)
 
 
+def _connection_items(value: Any) -> List[Dict[str, Any]]:
+    """Normalize Shopify connection/list shapes without losing node identity."""
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        nodes = value.get("nodes")
+        if isinstance(nodes, list):
+            return [item for item in nodes if isinstance(item, dict)]
+        edges = value.get("edges")
+        if isinstance(edges, list):
+            return [edge.get("node", {}) for edge in edges if isinstance(edge, dict) and isinstance(edge.get("node", {}), dict)]
+    return []
+
+
+def _payload_candidates(result: Dict[str, Any]) -> tuple[str, List[Any]]:
+    """Prefer structured MCP payloads while retaining legacy text compatibility."""
+    text_parts: List[str] = []
+    candidates: List[Any] = []
+    structured = result.get("structuredContent")
+    if isinstance(structured, (dict, list)):
+        candidates.append(structured)
+
+    for block in result.get("content", []) or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            text = str(block["text"])
+            text_parts.append(text)
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, (dict, list)):
+                    candidates.append(parsed)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        elif isinstance(block.get("data"), (dict, list)):
+            candidates.append(block["data"])
+
+    combined = "".join(text_parts).strip()
+    if combined:
+        try:
+            parsed = json.loads(combined)
+            if isinstance(parsed, (dict, list)):
+                candidates.append(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    candidates.append(result)
+    return combined, candidates
+
+
+def _money_minor(value: Any, currency: Any = None) -> tuple[Optional[int], Optional[str]]:
+    """Convert external commerce amounts to the canonical minor-unit contract."""
+    if isinstance(value, dict):
+        currency = value.get("currency") or value.get("currencyCode") or currency
+        if value.get("minor") is not None or value.get("amount_minor") is not None:
+            value = value.get("minor") if value.get("minor") is not None else value.get("amount_minor")
+        else:
+            value = value.get("amount") or value.get("value") or value.get("price")
+    if value in (None, ""):
+        return None, str(currency).upper() if currency else None
+    try:
+        return int(round(float(str(value).replace(",", "")) * 100)), str(currency).upper() if currency else None
+    except (TypeError, ValueError):
+        return None, str(currency).upper() if currency else None
+
+
+def _safe_checkout_url(value: Any, allowed_shop_url: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = urlsplit(str(value))
+        allowed = urlsplit(str(allowed_shop_url or ""))
+        if parsed.scheme != "https" or not parsed.hostname:
+            return None
+        if allowed.hostname and parsed.hostname != allowed.hostname:
+            return None
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
+    except Exception:
+        return None
+
+
+def _find_cart(payload: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("cart", "cartCreate", "cartLinesAdd", "cartLinesUpdate", "cartLinesRemove", "getCart"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            nested = value.get("cart") if isinstance(value.get("cart"), dict) else value
+            if isinstance(nested, dict) and (
+                nested.get("id") or nested.get("cart_id") or nested.get("checkoutUrl") or nested.get("checkout_url")
+            ):
+                return nested
+    if payload.get("checkoutUrl") or payload.get("checkout_url"):
+        return payload
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _find_cart(data)
+    return None
+
+
+def _find_value(payload: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(payload, dict):
+        for key in keys:
+            if key in payload:
+                return payload[key]
+        for value in payload.values():
+            if isinstance(value, dict):
+                found = _find_value(value, keys)
+                if found is not None:
+                    return found
+    return None
+
+
 def _base_product_url(url: Any) -> Optional[str]:
     if url in (None, ""):
         return None
@@ -108,34 +221,24 @@ class McpTool(BaseTool):
                 
                 # Extract results from Shopify MCP response format
                 result = data.get("result", {})
-                result_content = result.get("content", [])
                 is_error = result.get("isError", False)
-                text_output = ""
+                text_output, payload_candidates = _payload_candidates(result)
                 metadata: Dict[str, Any] = {"products": [], "dealers": [], "cart": None, "customer": None, "orders": []}
-                
-                for content_block in result_content:
-                    if content_block.get("type") == "text":
-                        text_output += content_block.get("text", "")
-                
-                # Try to parse JSON from text output for richer metadata extraction
-                parsed_json = None
-                if text_output:
-                    try:
-                        parsed_json = json.loads(text_output)
-                    except (json.JSONDecodeError, ValueError):
-                        parsed_json = None
-                
-                # Use parsed_json or result dict as the data source
-                data_source = parsed_json if parsed_json is not None else result
+
+                # Structured MCP payloads take precedence over legacy text JSON.
+                data_source = payload_candidates[0] if payload_candidates else result
                 
                 # ── Extract Products (search_shop_catalog, get_product_details) ──
                 raw_products = []
-                if isinstance(data_source, dict):
-                    if "products" in data_source:
-                        raw_products = data_source["products"]
-                    elif "data" in data_source and isinstance(data_source["data"], dict):
-                        raw_products = data_source["data"].get("products", [])
-                elif isinstance(data_source, list):
+                for candidate in payload_candidates:
+                    if isinstance(candidate, list):
+                        raw_products = _connection_items(candidate)
+                    else:
+                        found_products = _find_value(candidate, ("products",))
+                        raw_products = _connection_items(found_products)
+                    if raw_products:
+                        break
+                if not raw_products and isinstance(data_source, list):
                     # Some tools return a list of products directly
                     if data_source and isinstance(data_source[0], dict) and "product_id" in data_source[0]:
                         raw_products = data_source
@@ -150,13 +253,7 @@ class McpTool(BaseTool):
                     
                     variants_list = []
                     raw_variants = rp.get("variants")
-                    if isinstance(raw_variants, list):
-                        variants_list = raw_variants
-                    elif isinstance(raw_variants, dict):
-                        # Handle GraphQL edges/nodes pattern
-                        edges = raw_variants.get("edges") or []
-                        if isinstance(edges, list):
-                            variants_list = [e.get("node", {}) for e in edges if isinstance(e, dict)]
+                    variants_list = _connection_items(raw_variants)
                     
                     if variants_list:
                         sku = variants_list[0].get("sku") or sku
@@ -164,11 +261,11 @@ class McpTool(BaseTool):
                     # Price: from variants.price or top-level
                     price = rp.get("price", 0)
                     currency = rp.get("currency") or rp.get("currencyCode")
-                    price_range = rp.get("price_range")
+                    price_range = rp.get("price_range") or rp.get("priceRange")
                     if not price and isinstance(price_range, dict):
-                        min_price = price_range.get("min") or {}
+                        min_price = price_range.get("min") or price_range.get("minVariantPrice") or {}
                         if isinstance(min_price, dict):
-                            price = min_price.get("amount", 0)
+                            price = min_price.get("amount") or min_price.get("value") or 0
                             currency = min_price.get("currency") or currency
                     if not price and variants_list:
                         variant_price = variants_list[0].get("price", 0)
@@ -178,7 +275,10 @@ class McpTool(BaseTool):
                         else:
                             price = variant_price
                     
-                    # Variant ID for cart operations
+                    price_minor, price_currency = _money_minor(price, currency)
+                    currency = price_currency or (str(currency).upper() if currency else None)
+
+                    # Variant ID for cart operations. Never substitute a product ID.
                     variant_id = None
                     if variants_list:
                         variant_id = variants_list[0].get("variant_id") or variants_list[0].get("id")
@@ -200,15 +300,14 @@ class McpTool(BaseTool):
                             continue
                         raw_variant_id = raw_variant.get("variant_id") or raw_variant.get("id")
                         raw_variant_sku = raw_variant.get("sku") or raw_variant_id or sku
-                        raw_variant_price = raw_variant.get("price") or price
+                        raw_variant_price = raw_variant.get("price") if raw_variant.get("price") is not None else price
                         raw_variant_currency = (
                             raw_variant.get("currency")
                             or raw_variant.get("currencyCode")
                             or currency
                         )
-                        if isinstance(raw_variant_price, dict):
-                            raw_variant_currency = raw_variant_price.get("currency") or raw_variant_currency
-                            raw_variant_price = raw_variant_price.get("amount", 0)
+                        variant_price_minor, variant_price_currency = _money_minor(raw_variant_price, raw_variant_currency)
+                        raw_variant_currency = variant_price_currency or raw_variant_currency
                         normalized_variants.append({
                             "id": str(raw_variant_id or raw_variant_sku),
                             "variant_id": str(raw_variant_id or raw_variant_sku),
@@ -217,7 +316,9 @@ class McpTool(BaseTool):
                             "title": raw_variant.get("title") or raw_variant.get("name"),
                             "variant_title": raw_variant.get("title") or raw_variant.get("name"),
                             "variant_options": _variant_options(raw_variant),
-                            "price": float(raw_variant_price) if raw_variant_price else 0.0,
+                            "price": variant_price_minor or 0,
+                            "price_minor": variant_price_minor,
+                            "price_unit": "minor",
                             "currency": str(raw_variant_currency).upper() if raw_variant_currency else None,
                             "currency_source": "product" if raw_variant_currency else "missing",
                             "image_url": raw_variant.get("image_url") or raw_variant.get("image") or img,
@@ -226,16 +327,18 @@ class McpTool(BaseTool):
                             "in_stock": bool(raw_variant.get("in_stock") if raw_variant.get("in_stock") is not None else True),
                             "is_default": raw_variant_id == variant_id,
                         })
-                    variant_prices = [variant["price"] for variant in normalized_variants if variant.get("price")]
+                    variant_prices = [variant["price_minor"] for variant in normalized_variants if variant.get("price_minor") is not None]
                             
                     metadata["products"].append({
                         "id": p_id,
-                        "variant_id": str(variant_id) if variant_id else p_id,
+                        "variant_id": str(variant_id) if variant_id else None,
                         "sku": sku,
                         "name": name,
-                        "price": float(price) if price else 0.0,
+                        "price": price_minor or 0,
+                        "price_minor": price_minor,
+                        "price_unit": "minor",
                         "currency": str(currency).upper() if currency else None,
-                        "currency_source": "product" if currency else "missing",
+                        "currency_source": "catalog" if currency else "missing",
                         "category": str(rp.get("category") or rp.get("productType") or "General"),
                         "in_stock": bool(rp.get("in_stock") if rp.get("in_stock") is not None else True),
                         "image_url": img,
@@ -252,26 +355,27 @@ class McpTool(BaseTool):
                 
                 # ── Extract Cart (update_cart, get_cart) ──
                 cart_data = None
-                if isinstance(data_source, dict):
-                    # Response may have a 'cart' key, 'data' key containing 'cart', or be the cart itself
-                    cart_obj = data_source.get("cart")
-                    if not cart_obj and "data" in data_source and isinstance(data_source["data"], dict):
-                        cart_obj = data_source["data"].get("cart")
-                        
-                    if not cart_obj and ("checkoutUrl" in data_source or "checkout_url" in data_source):
-                        cart_obj = data_source
-                        
-                    if cart_obj and isinstance(cart_obj, dict):
-                        cart_id = cart_obj.get("id") or cart_obj.get("cart_id")
-                        checkout_url = cart_obj.get("checkoutUrl") or cart_obj.get("checkout_url")
-                        line_items = cart_obj.get("lines") or cart_obj.get("lineItems") or []
+                for candidate in payload_candidates:
+                    cart_obj = _find_cart(candidate)
+                    if cart_obj:
+                        allowed_shop_url = self.headers.get("x-shopify-shop-url") or self.headers.get("X-Shopify-Shop-Url")
+                        checkout_url = _safe_checkout_url(
+                            cart_obj.get("checkoutUrl") or cart_obj.get("checkout_url"),
+                            allowed_shop_url,
+                        )
+                        line_items = _connection_items(cart_obj.get("lines") or cart_obj.get("lineItems") or cart_obj.get("line_items"))
+                        cart_id = cart_obj.get("id") or cart_obj.get("cart_id") or cart_obj.get("cartId")
                         if cart_id or checkout_url:
                             cart_data = {
-                                "cart_id": cart_id,
+                                "cart_id": str(cart_id) if cart_id else None,
                                 "checkout_url": checkout_url,
-                                "line_items": line_items
+                                "cart_lines": line_items,
+                                "lines": line_items,
+                                "line_items": line_items,
                             }
                             metadata["cart"] = cart_data
+                            metadata["commerce_action"] = {"status": "succeeded", "cart": cart_data}
+                            break
                 
                 # ── Extract Customer / Orders ──
                 if isinstance(data_source, dict):
@@ -297,8 +401,8 @@ class McpTool(BaseTool):
                         
                 return ToolResult(
                     success=not is_error,
-                    data=text_output,
-                    error=text_output if is_error else None,
+                    data=text_output or json.dumps(data_source, default=str),
+                    error=(text_output or json.dumps(data_source, default=str)) if is_error else None,
                     metadata=metadata
                 )
         except Exception as e:

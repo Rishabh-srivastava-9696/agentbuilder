@@ -2,8 +2,8 @@
 Messages API Endpoints
 """
 
-from typing import AsyncGenerator, Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Header
+from typing import AsyncGenerator, Optional, Any
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Header, Query
 from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel, Field
@@ -27,6 +27,7 @@ from ....security.rate_limiter import check_named_rate_limit
 from ....services.message_service import MessageService
 from ....services.observability_service import ObservabilityService
 from ....websocket_manager import ws_manager
+from memory.managers.short_term import ShortTermMemory
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -44,6 +45,12 @@ class SessionResponse(BaseModel):
     conversation_id: str
     user_id: str
     session_token: str
+
+
+class HistoryResponse(BaseModel):
+    conversation_id: str
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    has_more: bool = False
 
 
 def _bind_request_to_session(request: MessageRequest, session: WidgetSession) -> None:
@@ -236,6 +243,56 @@ async def start_session(request: SessionRequest):
         user_id=session.user_id,
         session_token=token,
     )
+
+
+def _public_history_metadata(metadata: Any) -> dict[str, Any]:
+    """Expose only widget-safe message metadata; never return raw runtime state."""
+    if not isinstance(metadata, dict):
+        return {}
+    allowed = {
+        "products", "dealers", "commerce", "cart", "active_product_focus",
+        "product_reference_map", "original_query", "search_query", "resolved_reference",
+    }
+    result = {key: metadata[key] for key in allowed if key in metadata}
+    if "response_metadata" in metadata and isinstance(metadata["response_metadata"], dict):
+        result.update(_public_history_metadata(metadata["response_metadata"]))
+    return result
+
+
+@router.get("/history", response_model=HistoryResponse)
+async def get_widget_history(
+    limit: int = Query(50, ge=1, le=100),
+    x_widget_session: Optional[str] = Header(None),
+):
+    """Return signed-session-bound conversation history for widget hydration."""
+    session = decode_widget_session(x_widget_session)
+    if session is None:
+        raise HTTPException(status_code=401, detail="A valid widget session token is required")
+
+    try:
+        brand_db = await connection_manager.get_brand_db_by_agent_id(session.agent_id)
+        memory = ShortTermMemory(brand_db)
+        messages = await memory.get_recent_messages(session.conversation_id, limit=limit)
+        return HistoryResponse(
+            conversation_id=session.conversation_id,
+            messages=[
+                {
+                    "message_id": message.id,
+                    "conversation_id": message.conversation_id,
+                    "role": message.role.value,
+                    "content": message.content,
+                    "timestamp": message.timestamp.isoformat(),
+                    "metadata": _public_history_metadata(message.metadata),
+                }
+                for message in messages
+            ],
+            has_more=len(messages) >= limit,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("widget_history_failed", agent_id=session.agent_id, conversation_id=session.conversation_id, error=str(exc))
+        raise HTTPException(status_code=500, detail="Unable to load conversation history")
 
 
 @router.post("/", response_model=MessageResponse)

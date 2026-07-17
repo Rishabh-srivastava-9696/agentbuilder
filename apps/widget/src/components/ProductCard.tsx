@@ -10,7 +10,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
   const [imageError, setImageError] = useState(false);
   const [variantsExpanded, setVariantsExpanded] = useState(false);
   const variants = useMemo(() => product.variants || [], [product.variants]);
-  const isVariantProduct = variants.length > 1;
+  const isVariantProduct = variants.length > 1 || Boolean(product.has_variants && variants.length > 0);
   const defaultVariant = useMemo(() => {
     if (!variants.length) return undefined;
     return variants.find((variant) => variant.is_default)
@@ -18,11 +18,11 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
       || variants[0];
   }, [variants, product.default_variant_id]);
   const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>(
-    defaultVariant?.variant_id || defaultVariant?.id
+    getVariantId(defaultVariant)
   );
   const selectedVariant = useMemo(() => {
     if (!variants.length) return undefined;
-    return variants.find((variant) => (variant.variant_id || variant.id) === selectedVariantId) || defaultVariant || variants[0];
+    return variants.find((variant) => getVariantId(variant) === selectedVariantId) || defaultVariant || variants[0];
   }, [variants, selectedVariantId, defaultVariant]);
   const displayProduct = useMemo(() => mergeVariant(product, selectedVariant), [product, selectedVariant]);
   const visibleVariants = useMemo(
@@ -33,7 +33,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
   const optionNames = useMemo(() => getOptionNames(variants), [variants]);
 
   useEffect(() => {
-    setSelectedVariantId(defaultVariant?.variant_id || defaultVariant?.id);
+    setSelectedVariantId(getVariantId(defaultVariant));
     setImageError(false);
   }, [defaultVariant?.variant_id, defaultVariant?.id]);
 
@@ -77,7 +77,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
     ) {
       return `${formatPrice(product.price_min, product.currency)} - ${formatPrice(product.price_max, product.currency)}`;
     }
-    return formatPrice(displayProduct.price, displayProduct.currency);
+    return formatPrice(displayProduct.price_minor ?? displayProduct.price, displayProduct.currency);
   };
 
   const handleViewDetails = (e: React.MouseEvent) => {
@@ -102,13 +102,13 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
   const selectedVariantLabel = selectedVariant ? getVariantPrimaryLabel(selectedVariant) : undefined;
 
   return (
-    <div className={`product-card ${isVariantProduct ? 'variant-product-card' : ''} ${variantsExpanded ? 'variants-expanded' : ''}`}>
+    <div className={`product-card ${isVariantProduct ? 'variant-product-card' : ''} ${variantsExpanded ? 'expanded variants-expanded' : ''}`}>
       <div className="product-card-header">
         <div className="product-image-container">
-          {displayProduct.image_url && !imageError ? (
+          {(displayProduct.image_url || displayProduct.image) && !imageError ? (
             <img
               key={`${displayProduct.variant_id || displayProduct.sku || 'product'}:${displayProduct.image_url}`}
-              src={displayProduct.image_url}
+              src={displayProduct.image_url || displayProduct.image}
               alt={displayProduct.name}
               className="product-image"
               onError={handleImageError}
@@ -162,7 +162,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
               hiddenVariantCount={hiddenVariantCount}
               expanded={variantsExpanded}
               onSelect={(variant) => {
-                setSelectedVariantId(variant.variant_id || variant.id);
+                setSelectedVariantId(getVariantId(variant));
                 setImageError(false);
               }}
               onExpand={() => setVariantsExpanded(true)}
@@ -172,7 +172,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, onViewDetails
         
         <div className="product-price-row">
           {!isVariantProduct && <span className="product-price">{formatProductPrice()}</span>}
-          {(displayProduct.variant_url || displayProduct.product_url) && (
+          {(displayProduct.variant_url || displayProduct.product_url || displayProduct.url) && (
             <button 
               className="view-details-btn"
               onClick={handleViewDetails}
@@ -192,11 +192,13 @@ function mergeVariant(product: ProductData, variant?: ProductVariantData): Produ
   return {
     ...product,
     sku: variant.variant_sku || variant.sku || product.sku,
-    price: variant.price ?? product.price,
+    price: variant.price_minor ?? variant.price ?? product.price_minor ?? product.price,
+    price_minor: variant.price_minor ?? variant.price ?? product.price_minor ?? product.price,
+    price_unit: 'minor',
     currency: variant.currency || product.currency,
     currency_source: variant.currency_source || product.currency_source,
     image_url: variant.image_url || variant.image || product.image_url || product.image,
-    product_url: variant.product_url || product.product_url,
+    product_url: variant.product_url || product.product_url || product.url,
     variant_url: variant.variant_url || product.variant_url,
     in_stock: variant.in_stock ?? product.in_stock,
     variant_id: variant.variant_id || variant.id || product.variant_id,

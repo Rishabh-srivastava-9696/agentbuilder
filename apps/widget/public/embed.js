@@ -59,7 +59,7 @@
 
     if (isExpanded) {
       frame.style.width = '100vw';
-      frame.style.height = '100vh';
+      frame.style.height = '100dvh';
       frame.style.bottom = '0';
       frame.style[side] = '0';
       return;
@@ -69,7 +69,7 @@
     frame.style[side] = sideOffset;
     if (isOpen) {
       frame.style.width = 'min(420px, 100vw)';
-      frame.style.height = 'min(760px, 100vh)';
+      frame.style.height = 'min(760px, 100dvh)';
     } else {
       frame.style.width = '104px';
       frame.style.height = '104px';

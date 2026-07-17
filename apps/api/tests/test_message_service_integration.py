@@ -247,7 +247,15 @@ async def test_process_message_returns_products_dealers_and_suppresses_commerce_
     response = await service.process_message(request)
 
     assert response.citations == []
-    expected_product = {**product, "currency": "INR", "currency_source": "commerce.default_currency"}
+    expected_product = {
+        **product,
+        "currency": "INR",
+        "currency_source": "commerce.default_currency",
+        "price_minor": 999,
+        "price_unit": "minor",
+        "image_url": None,
+        "product_url": None,
+    }
     assert response.products == [expected_product]
     assert response.dealers == [dealer]
     assert response.metadata is not None

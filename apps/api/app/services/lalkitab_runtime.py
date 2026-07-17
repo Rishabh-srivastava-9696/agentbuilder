@@ -8,11 +8,11 @@ from typing import Any
 
 from tools.types import ToolResult
 
+from .artifact_registry import LAL_KITAB_TEMPLATE, normalize_agent_template
 from .context_connector_packs import built_in_geocode_endpoints, default_geocoding_config
 from .tool_registry import ContextConnectorTool
 
 
-LAL_KITAB_TEMPLATE = "astrology_lalkitab"
 LAL_KITAB_CHART_ENDPOINT = "lalkitab_chart"
 LAL_KITAB_SECONDARY_ENDPOINTS = (
     "lalkitab_debts",
@@ -262,12 +262,12 @@ class LalKitabPlanResult:
 
 
 def is_lalkitab_agent(config: dict[str, Any] | None) -> bool:
-    config = config or {}
+    config = config if isinstance(config, dict) else {}
     domain = config.get("domain") if isinstance(config.get("domain"), dict) else {}
     return (
-        domain.get("template") == LAL_KITAB_TEMPLATE
-        or config.get("agent_template") == LAL_KITAB_TEMPLATE
-        or config.get("template") == LAL_KITAB_TEMPLATE
+        normalize_agent_template(domain.get("template")) == LAL_KITAB_TEMPLATE
+        or normalize_agent_template(config.get("agent_template")) == LAL_KITAB_TEMPLATE
+        or normalize_agent_template(config.get("template")) == LAL_KITAB_TEMPLATE
     )
 
 

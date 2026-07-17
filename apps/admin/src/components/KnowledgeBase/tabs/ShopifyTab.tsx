@@ -10,6 +10,8 @@ interface ShopifyTabProps {
 
 export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProps) {
   const [storeUrl, setStoreUrl] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [fallbackCurrency, setFallbackCurrency] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [progress, setProgress] = useState(0);
   const [totalItems, setTotalItems] = useState(0);
@@ -30,7 +32,9 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
     try {
       const { job_id } = await catalogApi.importShopify(
         storeUrl.trim(),
-        brandId
+        brandId,
+        accessToken.trim() || undefined,
+        fallbackCurrency.trim() || undefined,
       );
       pollRef.current = setInterval(async () => {
         try {
@@ -62,11 +66,11 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
     <div className="space-y-5">
       {/* Header row */}
       <div className="flex items-start justify-between">
-        <div>
-          <h3 className="text-sm font-semibold text-gray-900">Sync from Shopify</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Imports public product context as a cache. Runtime Shopify agents should use Storefront MCP / UCP from Agent Configuration.
-          </p>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Sync from Shopify</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+            Use an authenticated Admin API token for production catalog sync. This tab remains available for one-off imports.
+              </p>
         </div>
         {status === 'done' && (
           <button
@@ -93,9 +97,33 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
         />
       </div>
 
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Admin API token</label>
+          <input
+            type="password"
+            value={accessToken}
+            onChange={e => setAccessToken(e.target.value)}
+            placeholder="shpat_..."
+            disabled={status === 'loading'}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Fallback currency</label>
+          <input
+            value={fallbackCurrency}
+            onChange={e => setFallbackCurrency(e.target.value.toUpperCase())}
+            placeholder="INR"
+            maxLength={3}
+            disabled={status === 'loading'}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm uppercase focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
+          />
+        </div>
+      </div>
+
       <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-        Shopify no longer relies on legacy pasted tokens for the agent path. Configure the store domain,
-        UCP profile, and app client credentials in the agent dashboard for live MCP/UCP behavior.
+        {accessToken.trim() ? 'The token is sent only to the encrypted sync configuration and is never returned in the dashboard.' : 'No token entered: this uses the public endpoint and may miss private products or store currency.'}
       </p>
 
       {/* Progress */}
@@ -129,7 +157,7 @@ export default function ShopifyTab({ brandId, onUpload, onBack }: ShopifyTabProp
       {status === 'done' && (
         <div className="rounded-md bg-green-50 border border-green-200 p-4">
           <p className="text-sm text-green-800 font-medium">
-            ✅ {items.length} products fetched from {storeUrl}
+            {items.length} products fetched from {storeUrl}
           </p>
           <p className="text-xs text-green-700 mt-1">
             Review and map fields in the next step.

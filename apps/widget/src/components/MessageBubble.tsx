@@ -5,7 +5,6 @@ import type { Message, ProductData, KundaliChartData } from '../types';
 import { ProductCard } from './ProductCard';
 import { DealerCard } from './DealerCard';
 import { KundaliChart } from './KundaliChart';
-import { DEFAULT_API_BASE_URL } from '../utils/apiClient';
 
 interface MessageBubbleProps {
   message: Message;
@@ -17,6 +16,8 @@ interface MessageBubbleProps {
   onRegenerate?: (id: string) => void;
   showSources?: boolean;
   showProductCards?: boolean;
+  apiUrl?: string;
+  agentId?: string | null;
 }
 
 // Initialize markdown-it instance
@@ -48,7 +49,12 @@ const parseProductInfo = (content: string): { cleanContent: string; productSkus:
     // Extract product_sku value
     const skuMatch = productBlock.match(/product_sku:\s*\[?([^\]\n]+)\]?/);
     if (skuMatch && skuMatch[1]) {
-      productSkus.push(skuMatch[1].trim());
+      productSkus.push(
+        ...skuMatch[1]
+          .split(',')
+          .map((sku) => sku.trim().replace(/^['"\s]+|['"\s]+$/g, ''))
+          .filter(Boolean),
+      );
     }
   }
   
@@ -59,7 +65,7 @@ const parseProductInfo = (content: string): { cleanContent: string; productSkus:
 };
 
 const getProductKey = (product: Partial<ProductData>): string =>
-  product.product_group_id || product.product_url || product.sku || (product as { product_id?: string }).product_id || product.id || product.name || JSON.stringify(product);
+  product.product_group_id || (product as { product_id?: string }).product_id || product.product_url || product.sku || product.id || product.name || JSON.stringify(product);
 
 const getUrlHost = (url?: string): string => {
   if (!url) {
@@ -70,6 +76,17 @@ const getUrlHost = (url?: string): string => {
     return new URL(url).hostname;
   } catch {
     return '';
+  }
+};
+
+const getSafeCheckoutUrl = (message: Message): string | undefined => {
+  const candidate = message.commerce?.cart?.checkout_url || (message.metadata?.cart as { checkout_url?: string } | undefined)?.checkout_url;
+  if (!candidate) return undefined;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'https:' ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
   }
 };
 
@@ -100,13 +117,22 @@ const formatProductPrice = (price?: number, currency?: string): string => {
 };
 
 // Fetch product details from API
-const fetchProductDetails = async (skus: string[], agentId: string): Promise<ProductData[]> => {
+const fetchProductDetails = async (skus: string[], agentId: string, apiUrl?: string): Promise<ProductData[]> => {
   try {
     console.log('[MessageBubble] Fetching products for SKUs:', skus, 'agentId:', agentId);
-    const response = await fetch(`${DEFAULT_API_BASE_URL}/api/v1/knowledge/products/by-skus`, {
+    const sessionKey = `agent_widget_session_v1_${encodeURIComponent(window.location.origin)}_${agentId}`;
+    let sessionToken: string | undefined;
+    try {
+      sessionToken = JSON.parse(sessionStorage.getItem(sessionKey) || '{}').sessionToken;
+    } catch {
+      sessionToken = undefined;
+    }
+    const baseUrl = (apiUrl || window.__APP_CONFIG__?.API_BASE_URL || window.location.origin).replace(/\/$/, '');
+    const response = await fetch(`${baseUrl}/api/v1/public/catalog/products`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(sessionToken ? { 'X-Widget-Session': sessionToken } : {}),
       },
       body: JSON.stringify({
         skus,
@@ -117,7 +143,7 @@ const fetchProductDetails = async (skus: string[], agentId: string): Promise<Pro
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[MessageBubble] Failed to fetch products:', response.status, response.statusText, errorText);
-      return [];
+      throw new Error(`Product hydration failed: ${response.status}`);
     }
     
     const data = await response.json();
@@ -139,15 +165,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   onRegenerate,
   showSources = false,
   showProductCards = true,
+  apiUrl,
+  agentId,
 }) => {
   const isUser = message.role === 'user';
   const [extractedProducts, setExtractedProducts] = useState<ProductData[]>([]);
+  const [hydrationState, setHydrationState] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle');
   const [isHovered, setIsHovered] = useState(false);
   
   // Parse product info tags and fetch product details
   useEffect(() => {
     if (isUser || !showProductCards || !message.content) {
       setExtractedProducts([]);
+      setHydrationState('idle');
       return;
     }
 
@@ -155,19 +185,28 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
 
     if (productSkus.length === 0) {
       setExtractedProducts([]);
+      setHydrationState('idle');
       return;
     }
 
-    // Get agent ID from URL or localStorage
-    const urlParams = new URLSearchParams(window.location.search);
-    const agentId = urlParams.get('agent_id') || localStorage.getItem('agent_widget_agent_id') || '';
+    const resolvedAgentId = agentId || new URLSearchParams(window.location.search).get('agent_id') || '';
+    if (!resolvedAgentId) {
+      setHydrationState('error');
+      return;
+    }
 
-    fetchProductDetails(productSkus, agentId)
+    setHydrationState('loading');
+    fetchProductDetails(productSkus, resolvedAgentId, apiUrl)
       .then(products => {
         console.log('[MessageBubble] Fetched products:', products);
         setExtractedProducts(products);
+        setHydrationState(products.length ? 'ready' : 'empty');
+      })
+      .catch(() => {
+        setExtractedProducts([]);
+        setHydrationState('error');
       });
-  }, [message.content, isUser, showProductCards]);
+  }, [message.content, isUser, showProductCards, agentId, apiUrl]);
   
   // Render markdown content with product tags removed
   const renderedContent = useMemo(() => {
@@ -188,14 +227,30 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   // Combine products from message metadata and extracted from tags
   const allProducts = useMemo(() => {
     const products = [...(message.products || []), ...extractedProducts];
-    const seen = new Set<string>();
-    return products.filter((product) => {
+    const merged = new Map<string, ProductData>();
+    products.forEach((product) => {
       const key = getProductKey(product);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, product);
+        return;
+      }
+      const variants = [...(existing.variants || []), ...(product.variants || [])];
+      const seenVariants = new Set<string>();
+      merged.set(key, {
+        ...existing,
+        ...product,
+        variants: variants.filter((variant) => {
+          const variantKey = variant.variant_id || variant.id || variant.sku || variant.variant_sku || variant.title || JSON.stringify(variant);
+          if (seenVariants.has(variantKey)) return false;
+          seenVariants.add(variantKey);
+          return true;
+        }),
+      });
     });
+    return Array.from(merged.values());
   }, [message.products, extractedProducts]);
+  const checkoutUrl = getSafeCheckoutUrl(message);
   
   // Helper to check if citation is about a product
   const getProductForCitation = (citation: { doc_id: string; title?: string; url?: string; snippet?: string }) => {
@@ -265,6 +320,26 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           </div>
         )}
+
+        {!isUser && checkoutUrl && (
+          <div className="checkout-action" role="status">
+            <span className="checkout-action-label">Your cart is ready.</span>
+            <a
+              href={checkoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="checkout-action-btn"
+            >
+              Continue to Shopify checkout →
+            </a>
+          </div>
+        )}
+
+        {!isUser && showProductCards && hydrationState !== 'idle' && hydrationState !== 'ready' && allProducts.length === 0 && (
+          <div className="product-hydration-status" role="status">
+            {hydrationState === 'loading' ? 'Loading product details…' : 'Product details are unavailable right now.'}
+          </div>
+        )}
         
         {/* Phase 5: Dealer Cards */}
         {!isUser && message.dealers && message.dealers.length > 0 && (
@@ -315,7 +390,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                       {relatedProduct && relatedProduct.category && (
                         <p className="citation-snippet">
                           Category: {relatedProduct.category}
-                          {relatedProduct.price && ` • ${formatProductPrice(relatedProduct.price, relatedProduct.currency)}`}
+                          {(relatedProduct.price_minor ?? relatedProduct.price) && ` • ${formatProductPrice(relatedProduct.price_minor ?? relatedProduct.price, relatedProduct.currency)}`}
                         </p>
                       )}
                     </div>

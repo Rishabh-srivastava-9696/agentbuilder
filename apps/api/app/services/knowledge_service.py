@@ -9,6 +9,7 @@ import io
 import uuid
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import structlog
@@ -18,7 +19,6 @@ from pymongo import UpdateOne
 from ..config import Settings
 from ..connections import connection_manager
 from .chunking import chunk_text, resolve_agent_chunking
-from .commerce_config import normalize_commerce_config
 from .job_store import JobStore
 from .qdrant_vector_service import QdrantVectorService
 from .runtime_settings_service import RuntimeSettingsService
@@ -105,19 +105,23 @@ class KnowledgeService:
                         identifiers.add(brand_scope[key])
                 identifiers.update(alias for alias in brand_scope.get("aliases", []) if alias)
 
-            agent = await system_db.agents.find_one({
+            brand = await system_db.brands.find_one({
                 "$or": [
                     {"id": {"$in": list(identifiers)}},
-                    {"brand_id": {"$in": list(identifiers)}},
-                    {"brand_slug": {"$in": list(identifiers)}},
-                ],
-                "configuration.commerce.default_currency": {"$nin": [None, ""]},
+                    {"slug": {"$in": list(identifiers)}},
+                ]
             })
-            if not agent:
+            if not brand:
                 return None
 
-            commerce = normalize_commerce_config((agent.get("configuration") or {}).get("commerce"))
-            return self._normalize_currency(commerce.get("default_currency"))
+            sync_config = brand.get("catalog_sync") or {}
+            explicit_currency = (
+                sync_config.get("fallback_currency")
+                or sync_config.get("default_currency")
+                or brand.get("default_currency")
+                or brand.get("currency")
+            )
+            return self._normalize_currency(explicit_currency)
         except Exception as exc:
             logger.warning("knowledge_default_currency_resolution_failed", brand_id=brand_id, error=str(exc))
             return None
@@ -130,7 +134,12 @@ class KnowledgeService:
         item_currency = self._normalize_currency(getattr(item, "currency", None))
         item_source = getattr(item, "currency_source", None)
         if item_currency:
-            return item_currency, item_source if item_source in {"catalog", "configured_default"} else "catalog"
+            return item_currency, item_source if item_source in {
+                "shopify_store",
+                "presentment",
+                "catalog",
+                "configured_default",
+            } else "catalog"
 
         default_currency = self._normalize_currency(configured_default_currency)
         if default_currency:
@@ -153,6 +162,11 @@ class KnowledgeService:
             "variant_title",
             "variant_options",
             "variant_url",
+            "price_unit",
+            "source_type",
+            "source_product_id",
+            "source_variant_id",
+            "source_key",
         )
         metadata: Dict[str, Any] = {}
         for field in fields:
@@ -160,6 +174,91 @@ class KnowledgeService:
             if value not in (None, "", [], {}):
                 metadata[field] = value
         return metadata
+
+    async def sync_shopify_catalog(
+        self,
+        job_id: str,
+        items: List[Any],
+        brand_id: str,
+        *,
+        source_url: str,
+        source_job_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Upsert a Shopify snapshot and deactivate only rows owned by that source."""
+        await self._ensure_connection(brand_id)
+        brand_scope = await self._resolve_brand_scope(brand_id)
+        await self.job_store.update(job_id, {"status": "processing"})
+
+        seen_source_keys: set[str] = set()
+        products_upserted = 0
+        error_count = 0
+        now = datetime.utcnow().isoformat()
+
+        for item in items:
+            source_key = getattr(item, "source_key", None)
+            if source_key:
+                seen_source_keys.add(str(source_key))
+            source_metadata = {
+                "type": "shopify",
+                "source_url": source_url,
+                "source_key": str(source_key) if source_key else None,
+                "sync_job_id": source_job_id or job_id,
+                "active": True,
+                "last_seen_at": now,
+            }
+            try:
+                await self._process_product_item(
+                    item,
+                    brand_id,
+                    job_id,
+                    brand_scope,
+                    configured_default_currency=None,
+                    source_metadata=source_metadata,
+                )
+                products_upserted += 1
+            except Exception as exc:
+                error_count += 1
+                logger.error(
+                    "shopify_product_upsert_failed",
+                    brand_id=brand_id,
+                    source_key=source_key,
+                    error=str(exc),
+                )
+
+        stale_query: Dict[str, Any] = {
+            "content_type": "product",
+            "metadata.catalog_source.type": "shopify",
+            "metadata.catalog_source.source_url": source_url,
+        }
+        if seen_source_keys:
+            stale_query["metadata.catalog_source.source_key"] = {"$nin": list(seen_source_keys)}
+
+        stale_result = await self.collection.update_many(
+            stale_query,
+            {
+                "$set": {
+                    "product_data.in_stock": False,
+                    "product_data.source_active": False,
+                    "metadata.catalog_source.active": False,
+                    "metadata.catalog_source.last_sync_job_id": source_job_id or job_id,
+                    "metadata.updated_at": now,
+                }
+            },
+        )
+
+        counts = {
+            "products_seen": len(items),
+            "products_upserted": products_upserted,
+            "products_marked_inactive": int(getattr(stale_result, "modified_count", 0) or 0),
+            "error_count": error_count,
+        }
+        await self.job_store.update(job_id, {
+            "status": "completed",
+            "processed_items": len(items),
+            "total_items": len(items),
+            "counts": counts,
+        })
+        return counts
 
     async def _get_knowledge_folders_collection(self, brand_id: str):
         db = await self._get_brand_database(brand_id)
@@ -553,10 +652,12 @@ class KnowledgeService:
         job_id: str,
         brand_scope: Optional[Dict[str, Any]] = None,
         configured_default_currency: Optional[str] = None,
+        source_metadata: Optional[Dict[str, Any]] = None,
     ):
         """Process a single product item."""
         currency, currency_source = self._resolve_item_currency(item, configured_default_currency)
-        display_price = self._display_product_price(item.price, currency)
+        price_unit = getattr(item, "price_unit", None)
+        display_price = self._display_product_price(item.price, currency, price_unit=price_unit)
         # Generate text description for embedding
         text_parts = [
             f"Product: {item.name}",
@@ -583,7 +684,8 @@ class KnowledgeService:
         chunks = await self._chunk_text(full_text, item.name)
         
         # Generate doc_id based on SKU
-        doc_id = f"{brand_id}_product_{item.sku}"
+        source_key = (source_metadata or {}).get("source_key") or getattr(item, "source_key", None)
+        doc_id = f"{brand_id}_product_{source_key or item.sku}"
         
         # Process each chunk
         for i, chunk_text in enumerate(chunks):
@@ -604,6 +706,7 @@ class KnowledgeService:
                     "sku": item.sku,
                     "name": item.name,
                     "price": item.price,
+                    "price_unit": price_unit,
                     "currency": currency,
                     "currency_source": currency_source,
                     "category": item.category,
@@ -621,6 +724,16 @@ class KnowledgeService:
                     "created_at": datetime.utcnow().isoformat()
                 }
             }
+            if source_metadata:
+                chunk_doc["metadata"]["catalog_source"] = dict(source_metadata)
+                chunk_doc["product_data"].update({
+                    "source_type": getattr(item, "source_type", None) or "shopify",
+                    "source_url": source_metadata.get("source_url"),
+                    "source_product_id": getattr(item, "source_product_id", None),
+                    "source_variant_id": getattr(item, "source_variant_id", None),
+                    "source_key": source_key,
+                    "source_active": True,
+                })
             chunk_doc["product_data"].update(self._product_variant_metadata(item))
             
             # Upsert to MongoDB (update if SKU exists, insert if new)
@@ -636,15 +749,27 @@ class KnowledgeService:
             job = await self.job_store.get(job_id) or {}
             await self.job_store.update(job_id, {"processed_chunks": job.get("processed_chunks", 0) + 1})
 
-    def _display_product_price(self, price: Any, currency: Optional[str]) -> str:
+    def _display_product_price(
+        self,
+        price: Any,
+        currency: Optional[str],
+        *,
+        price_unit: Optional[str] = None,
+    ) -> str:
         try:
-            numeric_price = float(price)
-            display_price = numeric_price / 100 if numeric_price >= 10000 else numeric_price
-            if display_price.is_integer():
-                amount = f"{int(display_price):,}"
-            else:
+            numeric_price = Decimal(str(price))
+            if price_unit == "minor":
+                display_price = numeric_price / Decimal("100")
                 amount = f"{display_price:,.2f}"
-        except (TypeError, ValueError):
+            else:
+                # Preserve the legacy manual-upload heuristic unless the
+                # source explicitly declares minor units.
+                display_price = numeric_price / Decimal("100") if numeric_price >= Decimal("10000") else numeric_price
+                if display_price == display_price.to_integral_value():
+                    amount = f"{int(display_price):,}"
+                else:
+                    amount = f"{display_price:,.2f}"
+        except (InvalidOperation, TypeError, ValueError):
             amount = str(price or "0")
         currency = self._normalize_currency(currency)
         return f"{currency} {amount}" if currency else amount

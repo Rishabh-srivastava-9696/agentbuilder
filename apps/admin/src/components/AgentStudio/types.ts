@@ -1,5 +1,31 @@
 import type { AzureOpenAIDeployment, Brand } from '../../api/client';
 
+export const CANONICAL_LAL_KITAB_TEMPLATE = 'astrology_lalkitab';
+
+const LAL_KITAB_TEMPLATE_ALIASES = new Set([
+  'lalkitab',
+  'lal_kitab',
+  'lal-kitab',
+  'lal kitab',
+  'astrology_lalkitab',
+  'astrology_lal_kitab',
+  'astrology-lal-kitab',
+  'astrology lal kitab',
+  'lalkitab_astrology',
+  'lal_kitab_astrology',
+].map((value) => value.replace(/[^a-z0-9]/g, '')));
+
+export function normalizeAgentTemplate(value: unknown): string {
+  const text = String(value || '').trim().toLowerCase();
+  return LAL_KITAB_TEMPLATE_ALIASES.has(text.replace(/[^a-z0-9]/g, ''))
+    ? CANONICAL_LAL_KITAB_TEMPLATE
+    : text;
+}
+
+export function isLalKitabTemplate(value: unknown): boolean {
+  return normalizeAgentTemplate(value) === CANONICAL_LAL_KITAB_TEMPLATE;
+}
+
 export type ContextConnectorMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export interface ContextConnectorEndpoint {

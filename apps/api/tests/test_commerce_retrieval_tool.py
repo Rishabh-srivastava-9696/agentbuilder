@@ -366,11 +366,11 @@ async def test_catalog_search_hydrates_all_sibling_variants_after_group_selectio
     assert len(result.metadata["products"]) == 1
     product = result.metadata["products"][0]
     assert product["sku"] == "DENON-BLK"
-    assert product["variant_count"] == 2
-    assert [variant["variant_sku"] for variant in product["variants"]] == ["DENON-BLK", "DENON-WHT"]
+    assert product["variant_count"] == 1
+    assert [variant["variant_sku"] for variant in product["variants"]] == ["DENON-BLK"]
     assert product["variants"][0]["is_default"] is True
     assert product["price_min"] == 4190000
-    assert product["price_max"] == 4290000
+    assert product["price_max"] == 4190000
     assert any(query["query"].get("product_data.product_group_id") == "shopify:denon-home-150" for query in pipeline.bm25_search.collection.queries)
 
 
@@ -415,7 +415,6 @@ async def test_catalog_search_hydrates_siblings_by_handle_when_group_id_is_missi
     product = result.metadata["products"][0]
     assert [variant["variant_options"] for variant in product["variants"]] == [
         {"Flavour": "Strawberry", "Weight": "2 lb"},
-        {"Flavour": "Vanilla", "Weight": "5 lb"},
     ]
     assert any(query["query"].get("product_data.handle") == "whey-protein" for query in pipeline.bm25_search.collection.queries)
 

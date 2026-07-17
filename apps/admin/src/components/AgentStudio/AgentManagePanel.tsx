@@ -1,10 +1,12 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import {
   ArrowTopRightOnSquareIcon,
   CheckCircleIcon,
   CircleStackIcon,
   ClipboardDocumentIcon,
   CommandLineIcon,
+  ArrowPathIcon,
   PuzzlePieceIcon,
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
@@ -78,6 +80,27 @@ export default function AgentManagePanel({ data, agentId, agentStatus = 'active'
           <SummaryRow icon={<ArrowTopRightOnSquareIcon className="h-4 w-4" />} label="Widget" value={widgetReady ? 'Ready' : data.widget_enabled ? 'Needs active agent' : 'Off'} />
         </div>
       </section>
+
+      {data.data_source === 'shopify' && (
+        <section className="rounded-lg border border-gray-200 bg-white p-4">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-gray-950 text-white">
+              <ArrowPathIcon className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-gray-950">Catalog Sync</p>
+              <p className="mt-1 text-xs leading-5 text-gray-500">Save the Shopify Admin token securely and monitor brand catalog freshness.</p>
+            </div>
+          </div>
+          <Link
+            to={`/knowledge-base?brand_id=${encodeURIComponent(data.brand_id)}`}
+            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+          >
+            <ArrowPathIcon className="h-4 w-4" />
+            Open Catalog Sync
+          </Link>
+        </section>
+      )}
 
       <section className="rounded-lg border border-gray-200 bg-white p-4">
         <div className="flex items-start justify-between gap-3">
