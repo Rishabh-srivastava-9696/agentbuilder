@@ -60,6 +60,26 @@ class _FailingQdrant:
         raise RuntimeError("Qdrant unavailable")
 
 
+class _MemoryJobStore:
+    """Keep storage-failure tests focused on the knowledge-base write path."""
+
+    def __init__(self):
+        self.jobs = {}
+
+    async def set(self, job_id, data):
+        self.jobs[job_id] = dict(data)
+
+    async def get(self, job_id):
+        job = self.jobs.get(job_id)
+        return dict(job) if job else None
+
+    async def update(self, job_id, updates):
+        if job_id not in self.jobs:
+            return False
+        self.jobs[job_id].update(updates)
+        return True
+
+
 def _single_chunk():
     return [{"content": "Sensitive but valid document content", "metadata": {}}]
 
@@ -69,6 +89,7 @@ def _embedding():
 
 
 async def _prepare_single_file_job(service: IngestionService) -> str:
+    service.job_store = _MemoryJobStore()
     service._resolve_chunking = AsyncMock(return_value=(1000, 100))
     service._extract_and_chunk = AsyncMock(return_value=_single_chunk())
     return await service.start_ingestion_job(
@@ -99,7 +120,8 @@ async def test_voyage_auth_failure_marks_job_error_without_storing_zero_vector(m
     job = await service.job_store.get(job_id)
     assert job["status"] == "error"
     assert job["processed_count"] == 0
-    assert "HTTP 401" in job["error"]
+    assert job["error"] == "Document embedding failed"
+    assert "401" not in job["error"]
     store_chunk.assert_not_awaited()
 
     with pytest.raises(IngestionEmbeddingError, match="HTTP 401"):
@@ -125,7 +147,7 @@ async def test_mongo_storage_failure_marks_job_error_instead_of_returning_a_fake
     job = await service.job_store.get(job_id)
     assert job["status"] == "error"
     assert job["processed_count"] == 0
-    assert job["error"] == "Failed to store knowledge-base chunk"
+    assert job["error"] == "Failed to store knowledge-base document"
 
 
 @pytest.mark.asyncio
@@ -149,7 +171,7 @@ async def test_qdrant_storage_failure_marks_job_error_instead_of_returning_a_fak
     job = await service.job_store.get(job_id)
     assert job["status"] == "error"
     assert job["processed_count"] == 0
-    assert job["error"] == "Failed to store knowledge-base chunk"
+    assert job["error"] == "Failed to store knowledge-base document"
     assert len(collection.inserted) == 1
 
 

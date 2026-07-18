@@ -18,6 +18,11 @@ RUN npm ci
 # Copy the source code
 COPY src ./src
 
+# The MCP server does not require root privileges at runtime.
+RUN chown -R node:node /app
+
+USER node
+
 # Expose the port the app runs on
 EXPOSE 3005
 

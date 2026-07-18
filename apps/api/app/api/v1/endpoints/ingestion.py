@@ -59,6 +59,13 @@ async def _authorize_job(
     job = await ingestion_service.job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    job_brand_id = job.get("brand_id")
+    if job_brand_id:
+        # New jobs retain their creation-time tenant scope so an agent transfer
+        # cannot grant a tenant access to another brand's historical jobs.
+        ensure_permission(current_user, permission)
+        ensure_brand_access(current_user, job_brand_id)
+        return job
     agent_id = job.get("agent_id")
     if not agent_id:
         # Historical unscoped jobs cannot be safely exposed to a tenant user.
@@ -84,7 +91,7 @@ async def upload_documents(
         ingestion_service: Injected ingestion service
     """
     try:
-        await _authorize_agent(current_user, agent_id, Permission.DOCUMENT_WRITE)
+        agent = await _authorize_agent(current_user, agent_id, Permission.DOCUMENT_WRITE)
         # Validate file types
         allowed_types = {
             "text/plain", "text/markdown", "application/pdf",
@@ -116,7 +123,11 @@ async def upload_documents(
             })
         
         # Start background ingestion job with agent_id
-        job_id = await ingestion_service.start_ingestion_job(file_contents, agent_id)
+        job_id = await ingestion_service.start_ingestion_job(
+            file_contents,
+            agent_id,
+            agent.get("brand_id"),
+        )
         background_tasks.add_task(ingestion_service.process_documents, job_id, file_contents, agent_id)
         
         logger.info("Document upload started", job_id=job_id, files_count=len(files), agent_id=agent_id)

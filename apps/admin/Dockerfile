@@ -11,16 +11,10 @@ WORKDIR /app
 
 # Install dependencies first (cached unless package.json changes)
 COPY package.json package-lock.json* ./
-RUN npm ci --legacy-peer-deps
+RUN npm ci
 
 # Copy source and build
 COPY . .
-
-# Runtime config is preferred for deployed environments; build args remain for local builds
-ARG REACT_APP_API_URL=http://localhost:8000
-ENV REACT_APP_API_URL=$REACT_APP_API_URL
-
-ENV GENERATE_SOURCEMAP=false
 
 RUN npm run build
 
@@ -37,7 +31,14 @@ COPY docker-entrypoint.sh /docker-entrypoint.d/40-runtime-config.sh
 ENV API_BASE_URL=http://localhost:8000
 ENV WIDGET_BASE_URL=http://localhost:5174
 
-RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh
+RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh \
+    && chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/run /etc/nginx/conf.d /docker-entrypoint.d \
+    && sed -i \
+        -e 's|^user .*;|# worker user is the unprivileged container user|' \
+        -e 's|^pid .*;|pid /tmp/nginx.pid;|' \
+        /etc/nginx/nginx.conf
+
+USER nginx
 
 EXPOSE 3000
 

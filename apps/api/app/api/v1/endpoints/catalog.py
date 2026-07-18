@@ -58,6 +58,40 @@ async def _require_catalog_path_brand_access(
     return await _require_catalog_brand_access(brand_id, user)
 
 
+async def _authorized_catalog_brand_id(brand_id: str, user: User) -> str:
+    """Resolve a request alias and authorize the canonical catalog owner scope."""
+    db = connection_manager.get_system_db()
+    brand = await db.brands.find_one({
+        "$or": [
+            {"id": brand_id},
+            {"slug": brand_id},
+        ]
+    })
+    canonical_brand_id = str(brand.get("id") or brand_id) if brand else brand_id
+    await _require_catalog_brand_access(canonical_brand_id, user)
+    return canonical_brand_id
+
+
+def _catalog_job_for_response(job: dict) -> dict:
+    """Keep job response shape while withholding provider/network exception text."""
+    safe_job = dict(job)
+    if safe_job.get("error"):
+        safe_job["error"] = "Catalog import failed. Review server logs for details."
+
+    if isinstance(safe_job.get("results"), list):
+        safe_results = []
+        for result in safe_job["results"]:
+            if not isinstance(result, dict):
+                safe_results.append(result)
+                continue
+            safe_result = dict(result)
+            if safe_result.get("error"):
+                safe_result["error"] = "Catalog item import failed. Review server logs for details."
+            safe_results.append(safe_result)
+        safe_job["results"] = safe_results
+    return safe_job
+
+
 def _firecrawl_key() -> str:
     return os.getenv("FIRECRAWL_API_KEY", "")
 
@@ -159,7 +193,7 @@ async def import_shopify(
 ):
     """Start async Shopify product fetch. Paginates /products.json. Returns job_id."""
     try:
-        await _require_catalog_brand_access(req.brand_id, user)
+        brand_id = await _authorized_catalog_brand_id(req.brand_id, user)
         store_url = catalog_service.normalize_shopify_store_url(req.store_url)
         if req.access_token and req.access_token.strip():
             store_url = catalog_service.normalize_authenticated_shopify_store_url(store_url)
@@ -170,7 +204,7 @@ async def import_shopify(
     # Save the encrypted configuration before scheduling the worker so a
     # dashboard refresh can always recover the job's source settings.
     await _upsert_sync_config(
-        req.brand_id,
+        brand_id,
         {
             "source_type": "shopify",
             "source_url": store_url,
@@ -181,14 +215,14 @@ async def import_shopify(
     )
 
     job_id = str(uuid.uuid4())
-    await catalog_service.create_job(job_id, "shopify", total=0)
+    await catalog_service.create_job(job_id, "shopify", brand_id=brand_id, total=0)
 
     background_tasks.add_task(
         catalog_service.fetch_shopify_products,
         store_url,
         req.access_token,
         job_id,
-        req.brand_id,
+        brand_id,
         fallback_currency,
     )
 
@@ -209,18 +243,19 @@ async def import_json_feed(
 ):
     """Fetch a JSON feed URL and auto-detect its format. Synchronous."""
     try:
-        await _require_catalog_brand_access(req.brand_id, user)
+        brand_id = await _authorized_catalog_brand_id(req.brand_id, user)
         feed_url = await catalog_service.validate_json_feed_url(req.url)
-        fallback_currency = await catalog_service._resolve_configured_default_currency(req.brand_id)
+        fallback_currency = await catalog_service._resolve_configured_default_currency(brand_id)
         result = await catalog_service.fetch_json_feed(feed_url, fallback_currency=fallback_currency)
     except HTTPException:
         raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Fetch failed: {exc}")
+        logger.error("catalog_json_feed_fetch_failed", error_type=type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Catalog feed fetch failed.") from None
 
-    await _upsert_sync_config(req.brand_id, {
+    await _upsert_sync_config(brand_id, {
         "source_type": "json_feed",
         "source_url": feed_url,
     })
@@ -236,7 +271,7 @@ async def import_csv(
     user: User = Depends(get_user_from_token_or_api_key),
 ):
     """Parse an uploaded CSV file and return rows as JSON. Synchronous."""
-    await _require_catalog_brand_access(brand_id, user)
+    await _authorized_catalog_brand_id(brand_id, user)
     raw = await file.read()
     try:
         text = raw.decode("utf-8-sig")
@@ -260,7 +295,7 @@ async def import_scrape(
     user: User = Depends(get_user_from_token_or_api_key),
 ):
     """Start async Firecrawl-based product extraction. Returns job_id."""
-    await _require_catalog_brand_access(req.brand_id, user)
+    brand_id = await _authorized_catalog_brand_id(req.brand_id, user)
     api_key = _firecrawl_key()
     if not api_key:
         raise HTTPException(
@@ -273,14 +308,15 @@ async def import_scrape(
         raise HTTPException(status_code=400, detail="Maximum 50 URLs per request.")
 
     job_id = str(uuid.uuid4())
-    await catalog_service.create_job(job_id, "scrape", total=len(req.urls))
-    fallback_currency = await catalog_service._resolve_configured_default_currency(req.brand_id)
+    await catalog_service.create_job(job_id, "scrape", brand_id=brand_id, total=len(req.urls))
+    fallback_currency = await catalog_service._resolve_configured_default_currency(brand_id)
 
     background_tasks.add_task(
         catalog_service.run_firecrawl_scrape,
         req.urls,
         job_id,
         api_key,
+        brand_id,
         fallback_currency=fallback_currency,
     )
     return {"job_id": job_id, "status": "processing"}
@@ -298,10 +334,14 @@ async def get_job(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
     job_brand_id = job.get("brand_id")
-    if not job_brand_id or (brand_id and job_brand_id != brand_id):
+    if not job_brand_id:
         raise HTTPException(status_code=404, detail="Job not found.")
+    if brand_id:
+        requested_brand_id = await _authorized_catalog_brand_id(brand_id, user)
+        if str(job_brand_id) != requested_brand_id:
+            raise HTTPException(status_code=404, detail="Job not found.")
     await _require_catalog_brand_access(str(job_brand_id), user)
-    return job
+    return _catalog_job_for_response(job)
 
 
 # ── Sync config ───────────────────────────────────────────────────────────────
@@ -387,6 +427,8 @@ async def manual_sync(
     brand = await db.brands.find_one({"id": brand_id})
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found.")
+    canonical_brand_id = str(brand.get("id") or brand_id)
+    await _require_catalog_brand_access(canonical_brand_id, _)
 
     config = _decrypt_sync_config_for_runtime(
         brand.get("catalog_sync") or {},
@@ -406,13 +448,13 @@ async def manual_sync(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         job_id = str(uuid.uuid4())
-        await catalog_service.create_job(job_id, "shopify")
+        await catalog_service.create_job(job_id, "shopify", brand_id=canonical_brand_id)
         background_tasks.add_task(
             catalog_service.fetch_shopify_products,
             source_url,
             config.get("access_token"),
             job_id,
-            brand_id,
+            canonical_brand_id,
             fallback_currency,
         )
         return {
@@ -424,11 +466,11 @@ async def manual_sync(
 
     if source_type == "json_feed":
         try:
-            fallback_currency = await catalog_service._resolve_configured_default_currency(brand_id)
+            fallback_currency = await catalog_service._resolve_configured_default_currency(canonical_brand_id)
             result = await catalog_service.fetch_json_feed(config["source_url"], fallback_currency=fallback_currency)
             completed_at = datetime.utcnow().isoformat()
             await db.brands.update_one(
-                {"id": brand_id},
+                {"id": canonical_brand_id},
                 {"$set": {
                     "catalog_sync.last_sync_status": "completed",
                     "catalog_sync.last_sync_completed_at": completed_at,
@@ -440,7 +482,12 @@ async def manual_sync(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            logger.error(
+                "catalog_manual_sync_failed",
+                brand_id=canonical_brand_id,
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(status_code=500, detail="Catalog sync failed.") from None
 
     raise HTTPException(
         status_code=400,

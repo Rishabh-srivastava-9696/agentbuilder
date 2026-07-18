@@ -28,6 +28,19 @@ const apiClient = new APIClient(API_BASE);
 const wsClient = new WebSocketClient(API_BASE);
 const isEmbedded = window.parent !== window || new URLSearchParams(window.location.search).get('embedded') === '1';
 
+function getEmbeddingParentOrigin(): string | null {
+  if (window.parent === window || !document.referrer) {
+    return null;
+  }
+
+  try {
+    const origin = new URL(document.referrer).origin;
+    return origin === 'null' ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
 function createSecureClientId(prefix: string): string {
   if (window.crypto?.randomUUID) {
     return `${prefix}_${window.crypto.randomUUID()}`;
@@ -213,11 +226,14 @@ function App({ config }: AppProps) {
   React.useEffect(() => {
     if (!isEmbedded) return;
 
+    const parentOrigin = getEmbeddingParentOrigin();
+    if (!parentOrigin) return;
+
     window.parent.postMessage({
       type: 'agentbuilder-widget-state',
       isOpen,
       isExpanded,
-    }, '*');
+    }, parentOrigin);
   }, [isOpen, isExpanded]);
 
   // ── Widget control channel (human takeover) ───────────────────

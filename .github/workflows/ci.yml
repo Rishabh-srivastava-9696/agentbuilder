@@ -85,11 +85,83 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  dependency-vulnerabilities:
+    name: Dependency vulnerabilities (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: API Python dependencies
+            manifest: apps/api/requirements.txt
+          - component: Agent runtime Python package
+            manifest: packages/agent_runtime/pyproject.toml
+          - component: Commons Python package
+            manifest: packages/commons/pyproject.toml
+          - component: LLM Python package
+            manifest: packages/llm/pyproject.toml
+          - component: Memory Python package
+            manifest: packages/memory/pyproject.toml
+          - component: Retrieval Python package
+            manifest: packages/retrieval/pyproject.toml
+          - component: Tools Python package
+            manifest: packages/tools/pyproject.toml
+          - component: Admin Node lockfile
+            manifest: apps/admin/package-lock.json
+          - component: Widget Node lockfile
+            manifest: apps/widget/package-lock.json
+          - component: Shopify MCP Node lockfile
+            manifest: apps/shopify-mcp/package-lock.json
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on high or critical dependency vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ matrix.manifest }}
+          scanners: vuln
+          vuln-type: library
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on SAST findings
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -w /src \
+            semgrep/semgrep:1.91.0@sha256:b71f57a5f546b27dfd5e5fb62149e5fa4cf0ce58436a8fcb4e3723fe972788e8 \
+            semgrep scan \
+            --config p/default \
+            --error \
+            --strict \
+            --disable-nosem \
+            --metrics=off \
+            --exclude '**/*.test.*' \
+            --exclude '**/*.spec.*' \
+            apps/api/app \
+            packages \
+            apps/admin/src \
+            apps/widget/src \
+            apps/shopify-mcp/src \
+            apps/api/Dockerfile \
+            apps/admin/Dockerfile \
+            apps/widget/Dockerfile \
+            apps/shopify-mcp/Dockerfile \
+            docker-compose.yml
+
   images:
     name: Container build parity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f apps/api/Dockerfile -t agentbuilder-api:ci .
+      - run: docker build -t agentbuilder-admin:ci apps/admin
+      - run: docker build -t agentbuilder-widget:ci apps/widget
       - run: docker build -t agentbuilder-shopify:ci apps/shopify-mcp
       - run: cp .env.docker.example .env.docker && docker compose config --no-interpolate >/dev/null

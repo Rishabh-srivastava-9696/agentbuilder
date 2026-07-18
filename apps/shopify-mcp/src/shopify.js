@@ -48,7 +48,9 @@ export async function discoverMcpEndpoints(shopUrl) {
     discoveryCache.set(shopDomain, endpoints);
     return endpoints;
   } catch (err) {
-    console.error(`Error discovering MCP for ${shopUrl}:`, err);
+    console.error('Shopify MCP discovery failed', {
+      errorType: err instanceof Error ? err.name : 'unknown',
+    });
     // Fallback to standard patterns if discovery fails
     return {
       shopDomain,
@@ -95,7 +97,9 @@ export async function fetchTools(url, headers = {}, expectedShopDomain) {
     const body = await response.json();
     return body.result?.tools || [];
   } catch (err) {
-    console.error(`Error fetching tools from ${targetUrl}:`, err.message);
+    console.error('Shopify MCP tool discovery failed', {
+      errorType: err instanceof Error ? err.name : 'unknown',
+    });
     return [];
   }
 }
@@ -130,7 +134,7 @@ export async function forwardMcpRequest(url, payload, headers = {}, expectedShop
     if (response.status === 429 && attempt < MAX_ATTEMPTS) {
       const retryAfterMs = parseInt(response.headers.get('retry-after') || '0', 10) * 1000
         || (attempt * 1000); // fallback: 1s, 2s
-      console.warn(`Shopify MCP rate limited (429). Retrying in ${retryAfterMs}ms (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      console.warn('Shopify MCP rate limited; retrying request', { retryAfterMs, attempt, maxAttempts: MAX_ATTEMPTS });
       await new Promise(resolve => setTimeout(resolve, retryAfterMs));
       return forwardMcpRequest(targetUrl, payload, headers, expectedShopDomain, attempt + 1);
     }
@@ -144,7 +148,9 @@ export async function forwardMcpRequest(url, payload, headers = {}, expectedShop
     return response.json();
   } catch (err) {
     clearTimeout(timeout);
-    console.error(`Error forwarding MCP request to ${targetUrl}:`, err.message);
+    console.error('Shopify MCP request forwarding failed', {
+      errorType: err instanceof Error ? err.name : 'unknown',
+    });
     throw err;
   }
 }

@@ -20,7 +20,7 @@ import {
 } from '../utils/llmOptions';
 import { buildWidgetUrl } from '../utils/widget';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = import.meta.env.DEV;
 
 function parseStructuredField(value: string, fallback: any): any {
   if (!value?.trim()) {
@@ -740,7 +740,7 @@ export default function AgentWizard() {
           }));
 
           setAgentData(prev => ({ ...prev, documents: mappedDocs }));
-          isDev && console.log(`✅ Loaded ${mappedDocs.length} documents into wizard`, mappedDocs);
+          isDev && console.log('Loaded documents into wizard', { count: mappedDocs.length });
         } catch (error) {
           console.error('❌ Failed to load documents:', error);
         }
@@ -1235,7 +1235,7 @@ export default function AgentWizard() {
         isDev && console.log('📄 Total documents:', agentData.documents.length);
         const filesToUpload = agentData.documents
           .filter((doc): doc is typeof doc & { file: File } => {
-            isDev && console.log(`  - ${doc.filename}: has file object?`, !!doc.file);
+            isDev && console.log('Document file availability', { hasFile: !!doc.file });
             return !!doc.file;
           })
           .map(doc => doc.file);

@@ -19,7 +19,7 @@ import type {
   UploadJobStatus,
 } from '../../types/knowledge';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = import.meta.env.DEV;
 
 interface StepKnowledgeBaseProps {
   data: {

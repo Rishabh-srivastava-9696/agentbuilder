@@ -162,4 +162,5 @@ and `MCP_SERVICE_AUTH_TOKEN`. The Shopify MCP service additionally requires
 See [P0 security migration](./P0_SECURITY_MIGRATION.md) for rollout order,
 client-impact checklist, and operational verification, and the
 [P1 reliability contract](./P1_RELIABILITY_CONTRACT.md) for client migration
-and deployment checks.
+and deployment checks. See the [P2 production hardening contract](./P2_PRODUCTION_HARDENING.md)
+for durable job status, tenant-control-plane, and evidence-validation behavior.

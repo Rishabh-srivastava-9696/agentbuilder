@@ -94,3 +94,5 @@ curl http://localhost:8000/health
 - Azure deployment discovery for the admin UI uses ARM + `DefaultAzureCredential`; if the ARM env vars are missing, the endpoint returns `503`
 - Runtime provider secrets are resolved from encrypted records in the system DB first, then from environment variables as bootstrap/fallback
 - Strapi dashboard provisioning for agents must be best-effort and non-blocking; agent create/update/delete should not fail after Mongo writes because Strapi is unavailable
+- Generated factual answers must pass the deterministic claim-evidence gate before persistence or delivery. Server-owned safety templates and non-factual clarification may bypass it; raw evidence/provider data must never reach public metadata.
+- Ingestion job state is owned by the system MongoDB store, with Redis only as cache. Status/cancel authorization uses immutable creation-time brand scope; FastAPI background execution itself is not a durable worker queue.

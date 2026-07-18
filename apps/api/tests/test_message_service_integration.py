@@ -2,6 +2,8 @@
 Integration-style tests for MessageService against the current runtime contract.
 """
 
+import json
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -352,7 +354,8 @@ async def test_process_message_filters_mixed_scope_request_before_orchestrator(s
 
     assert "I’ll stay focused" in response.message
     assert "food or nutrition recommendations" in response.message
-    assert "Here are relevant commode options." in response.message
+    assert "I don’t have enough verified information" in response.message
+    assert "Here are relevant commode options." not in response.message
     run_query = orchestrator.run.await_args.kwargs["query"]
     assert "commode" in run_query
     assert "lunch" not in run_query
@@ -386,6 +389,171 @@ async def test_process_message_uses_low_confidence_guardrail(service_bundle):
     second_write = service.short_term.add_message.await_args_list[1].kwargs
     assert second_write["metadata"]["guardrail_action"] == "fallback"
     assert second_write["metadata"]["guardrail_reason"] == "low_confidence"
+
+
+@pytest.mark.asyncio
+async def test_process_message_keeps_supported_claim_and_removes_private_evidence_annotation(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    service.observability.track_event = AsyncMock()
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    orchestrator.run.return_value = AgentResult(
+        answer="The warranty coverage is 2 years. [evidence: warranty-terms-v1]",
+        metadata={
+            "validation_confidence": 0.92,
+            "tool_results": {
+                "knowledge": ToolResult(
+                    success=True,
+                    data="Warranty coverage is 2 years from the original purchase date.",
+                    metadata={},
+                )
+            },
+        },
+    )
+
+    response = await service.process_message(
+        MessageRequest(message="What is the warranty?", user_id="user123", agent_id="agent-123", conversation_id="conv123")
+    )
+
+    assert response.message == "The warranty coverage is 2 years."
+    assert "evidence:" not in response.message.lower()
+    assert "warranty-terms-v1" not in response.message
+
+
+@pytest.mark.asyncio
+async def test_process_message_replaces_unsupported_factual_claim_with_safe_fallback(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    service.observability.track_event = AsyncMock()
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    orchestrator.run.return_value = AgentResult(
+        answer="The warranty coverage is 3 years.",
+        metadata={
+            "validation_confidence": 0.92,
+            "tool_results": {
+                "knowledge": ToolResult(
+                    success=True,
+                    data="Warranty coverage is 2 years from the original purchase date.",
+                    metadata={},
+                )
+            },
+        },
+    )
+
+    response = await service.process_message(
+        MessageRequest(message="What is the warranty?", user_id="user123", agent_id="agent-123", conversation_id="conv123")
+    )
+
+    assert response.message.startswith("I don’t have enough verified information")
+    assert "3 years" not in response.message
+    assistant_write = service.short_term.add_message.await_args_list[-1].kwargs
+    assert assistant_write["metadata"]["guardrail_reason"] == "claim_evidence"
+    assert assistant_write["metadata"]["evidence_validation"]["unsupported_claim_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_process_message_allows_structured_commerce_price_and_stock_without_citations(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    service.observability.track_event = AsyncMock()
+    service.agent_config = {
+        "data_source": "shopify",
+        "commerce": {"default_currency": "INR", "currency_policy": "catalog_first_config_fallback"},
+    }
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    product = {"sku": "SPK-1", "name": "Bookshelf Speaker", "price": 999, "currency": "INR", "in_stock": True}
+    orchestrator.run.return_value = AgentResult(
+        answer="Bookshelf Speaker costs ₹999 and is in stock.",
+        metadata={
+            "validation_confidence": 0.92,
+            "tool_results": {"catalog": ToolResult(success=True, data=None, metadata={"products": [product]})},
+        },
+    )
+
+    response = await service.process_message(
+        MessageRequest(message="Tell me about the Bookshelf Speaker", user_id="user123", agent_id="agent-123", conversation_id="conv123")
+    )
+
+    assert response.message == "Bookshelf Speaker costs ₹999 and is in stock."
+    assert response.citations == []
+    assert response.products[0]["name"] == "Bookshelf Speaker"
+
+
+@pytest.mark.asyncio
+async def test_stream_replaces_unsupported_lalkitab_remedy_without_private_context_leak(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    service.observability.track_event = AsyncMock()
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    agent_result = AgentResult(
+        answer="Your remedy is to donate copper every Sunday.",
+        metadata={
+            "lalkitab_runtime": True,
+            "validation_passed": True,
+            "validation_confidence": 1.0,
+            "tool_results": {},
+            "lalkitab_api_context_full": {
+                "normalized_birth_input": {"date": "1987-07-16", "time": "15:26:00", "latitude": 28.6139},
+                "chart_context": {"ascendant": "Aries"},
+            },
+        },
+    )
+    async def run_orchestrator(query, context, chat_history=None, on_event=None):
+        return agent_result
+
+    orchestrator.run = run_orchestrator
+
+    chunks = [
+        chunk
+        async for chunk in service.stream_message(
+            MessageRequest(message="Give me a remedy", user_id="user123", agent_id="agent-123", conversation_id="conv123")
+        )
+    ]
+
+    public_payload = json.dumps([chunk.model_dump(mode="json") for chunk in chunks], ensure_ascii=False)
+    assert "I can’t verify that Lal Kitab interpretation or remedy" in public_payload
+    assert "donate copper" not in public_payload
+    assert "1987-07-16" not in public_payload
+    assert "15:26:00" not in public_payload
+    assert "28.6139" not in public_payload
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_supported_claim_and_never_emits_private_evidence_annotation(service_bundle):
+    service = service_bundle["service"]
+    orchestrator = service_bundle["orchestrator"]
+    service.observability.track_event = AsyncMock()
+    service._build_memory_context = AsyncMock(return_value=_empty_memory_context())
+    agent_result = AgentResult(
+        answer="The warranty coverage is 2 years. [source: warranty-terms-v1]",
+        metadata={
+            "validation_confidence": 0.92,
+            "tool_results": {
+                "knowledge": ToolResult(
+                    success=True,
+                    data="Warranty coverage is 2 years from the original purchase date.",
+                    metadata={},
+                )
+            },
+        },
+    )
+    async def run_orchestrator(query, context, chat_history=None, on_event=None):
+        return agent_result
+
+    orchestrator.run = run_orchestrator
+
+    chunks = [
+        chunk
+        async for chunk in service.stream_message(
+            MessageRequest(message="What is the warranty?", user_id="user123", agent_id="agent-123", conversation_id="conv123")
+        )
+    ]
+
+    public_content = "".join(chunk.content for chunk in chunks if chunk.type in {"content", "final_answer"})
+    final_answer = next(chunk.content for chunk in chunks if chunk.type == "final_answer")
+    assert final_answer == "The warranty coverage is 2 years."
+    assert "source:" not in public_content.lower()
+    assert "warranty-terms-v1" not in public_content
 
 
 @pytest.mark.asyncio

@@ -36,7 +36,12 @@ WORKDIR /app/api
 
 EXPOSE 8000
 
-RUN chmod +x /app/api/docker-entrypoint.sh
+RUN chmod +x /app/api/docker-entrypoint.sh \
+    && groupadd --system app \
+    && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+
+USER app
 
 # Fail fast with a clear config error before importing the app.
 ENTRYPOINT ["/app/api/docker-entrypoint.sh"]

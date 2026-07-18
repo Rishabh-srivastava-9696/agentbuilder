@@ -31,10 +31,12 @@ logger = structlog.get_logger()
 _job_store = JobStore()
 
 
-async def create_job(job_id: str, job_type: str, total: int = 0) -> None:
+async def create_job(job_id: str, job_type: str, brand_id: str, total: int = 0) -> None:
+    """Persist an owned catalog job before its asynchronous worker is queued."""
     await _job_store.set(job_id, {
         "job_id": job_id,
         "type": job_type,
+        "brand_id": brand_id,
         "status": "processing",
         "processed": 0,
         "total": total,
@@ -988,11 +990,14 @@ async def run_firecrawl_scrape(
     urls: List[str],
     job_id: str,
     api_key: str,
+    brand_id: str,
     *,
     fallback_currency: Optional[str] = None,
 ) -> None:
     """Background task: Firecrawl-extract product data from each URL."""
-    if not await _job_store.get(job_id):
+    job = await _job_store.get(job_id)
+    if not job or job.get("brand_id") != brand_id:
+        logger.warning("firecrawl_job_scope_mismatch", job_id=job_id, brand_id=brand_id)
         return
 
     try:

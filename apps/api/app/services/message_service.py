@@ -40,7 +40,7 @@ from agent_runtime.orchestrator_shopify import ShopifyOrchestrator
 from ..config import Settings
 from ..connections import connection_manager
 from ..monitoring import AGENT_FALLBACK_COUNT, GUARDRAIL_COUNT, MESSAGE_COUNT, MESSAGE_DURATION
-from .response_validator import ResponseValidator  # Phase 4
+from .response_validator import ResponseValidator, validate_claim_evidence  # Phase 4
 from .strapi_client import StrapiClient
 from .runtime_settings_service import RuntimeSettingsService
 from .tool_config_secrets import decrypt_full_agent_configuration_for_runtime
@@ -100,6 +100,10 @@ GUARDRAIL_OFF_DOMAIN_MESSAGE = (
 LOW_CONFIDENCE_MESSAGE = (
     "I don’t have enough verified information in the knowledge base to answer that reliably. "
     "Please share a little more detail or contact the brand team for confirmation."
+)
+LAL_KITAB_UNSUPPORTED_CLAIM_MESSAGE = (
+    "I can’t verify that Lal Kitab interpretation or remedy from the calculated context I have. "
+    "Please ask a narrower question or try again when the supporting information is available."
 )
 STREAM_GENERATION_ERROR_MESSAGE = (
     "I’m sorry, but I can’t complete that response right now. Please try again in a moment."
@@ -1726,13 +1730,33 @@ Answer the user directly.
         return {"action": "allow", "reason": "none", "message": ""}
 
     def _apply_post_response_guardrails(self, response_text: str, metadata: dict) -> tuple[str, dict]:
+        metadata = dict(metadata or {})
+        if metadata.pop("_trusted_safety_template", False):
+            # Pre-response block/escalation messages are server-owned templates,
+            # not generated factual claims. They may safely bypass evidence
+            # matching while retaining an auditable, non-sensitive marker.
+            metadata["evidence_validation"] = {
+                "claim_count": 0,
+                "evidence_record_count": 0,
+                "unsupported_claim_count": 0,
+                "trusted_safety_template": True,
+            }
+            return response_text, metadata
+        validation_issues = metadata.get("validation_issues") or []
+        lalkitab_safe_abstention = bool(
+            metadata.get("lalkitab_runtime")
+            and (
+                response_text == LAL_KITAB_CHART_UNAVAILABLE_MESSAGE
+                or "validated_chart_context_unavailable" in validation_issues
+            )
+        )
         confidence = float(metadata.get("validation_confidence", 1.0) or 1.0)
         threshold = getattr(self.settings, "CONFIDENCE_THRESHOLD", 0.70)
         try:
             threshold_value = float(threshold)
         except (TypeError, ValueError):
             threshold_value = 0.70
-        if confidence < threshold_value:
+        if confidence < threshold_value and not lalkitab_safe_abstention:
             GUARDRAIL_COUNT.labels(action="fallback", reason="low_confidence").inc()
             next_metadata = {
                 **metadata,
@@ -1740,18 +1764,65 @@ Answer the user directly.
                 "guardrail_reason": "low_confidence",
                 "original_confidence": confidence,
             }
-            return LOW_CONFIDENCE_MESSAGE, next_metadata
+            return self._apply_claim_evidence_guard(LOW_CONFIDENCE_MESSAGE, next_metadata)
 
         hide_internal_sources = bool(
             ((self.agent_config or {}).get("conversation_policy") or {}).get("hide_internal_sources", True)
         )
         if hide_internal_sources and response_text and INTERNAL_SOURCE_TERMS.search(response_text):
-            return self._strip_internal_source_language(response_text), {
+            response_text, metadata = self._strip_internal_source_language(response_text), {
                 **metadata,
                 "public_answer_sanitized": True,
             }
 
-        return response_text, metadata
+        return self._apply_claim_evidence_guard(response_text, metadata)
+
+    def _apply_claim_evidence_guard(self, response_text: str, metadata: dict | None) -> tuple[str, dict]:
+        """Fail closed when a final answer makes a factual claim without evidence.
+
+        This central final-answer gate is intentionally synchronous and
+        deterministic. It accepts textual retrieval evidence and structured
+        commerce/chart data, while keeping the evidence comparison private.
+        """
+        next_metadata = dict(metadata or {})
+        validation = validate_claim_evidence(
+            response_text,
+            tool_results=next_metadata.get("tool_results"),
+            runtime_metadata=next_metadata,
+        )
+        next_metadata["evidence_validation"] = validation.metadata
+        if validation.is_valid:
+            return validation.sanitized_response, next_metadata
+
+        is_lalkitab = bool(next_metadata.get("lalkitab_runtime"))
+        chart_was_validated = bool(next_metadata.get("validation_passed")) and (
+            "validated_chart_context_unavailable" not in (next_metadata.get("validation_issues") or [])
+        )
+        if is_lalkitab and chart_was_validated:
+            fallback_message = LAL_KITAB_UNSUPPORTED_CLAIM_MESSAGE
+        elif is_lalkitab:
+            fallback_message = LAL_KITAB_CHART_UNAVAILABLE_MESSAGE
+        else:
+            fallback_message = LOW_CONFIDENCE_MESSAGE
+        GUARDRAIL_COUNT.labels(action="fallback", reason="claim_evidence").inc()
+        logger.warning(
+            "claim_evidence_guard_fallback",
+            claim_count=validation.metadata.get("claim_count", 0),
+            evidence_record_count=validation.metadata.get("evidence_record_count", 0),
+            unsupported_claim_count=validation.metadata.get("unsupported_claim_count", 0),
+            lalkitab_runtime=is_lalkitab,
+        )
+        return fallback_message, {
+            **next_metadata,
+            "fallback": True,
+            "fallback_stage": "claim_evidence",
+            "fallback_reason": "unsupported_claim",
+            "guardrail_action": "fallback",
+            "guardrail_reason": "claim_evidence",
+            "validation_passed": False,
+            "validation_confidence": 0.0,
+            "validation_issues": ["unsupported_factual_claim"],
+        }
 
     def _strip_internal_source_language(self, response_text: str) -> str:
         """Remove backend/runtime explanations from public answers."""
@@ -1778,7 +1849,16 @@ Answer the user directly.
         user_message: str,
         decision: dict,
     ) -> MessageResponse:
-        response_text = decision["message"]
+        response_text, response_metadata = self._apply_post_response_guardrails(
+            decision["message"],
+            {
+                "validation_confidence": 1.0,
+                "validation_passed": False,
+                "guardrail_action": decision["action"],
+                "guardrail_reason": decision["reason"],
+                "_trusted_safety_template": True,
+            },
+        )
         if self._short_term_memory_enabled():
             await self.short_term.add_message(
                 conversation_id=conversation_id,
@@ -1786,10 +1866,11 @@ Answer the user directly.
                 content=response_text,
                 metadata={
                     "user_id": user_id,
-                    "guardrail_action": decision["action"],
-                    "guardrail_reason": decision["reason"],
+                    "guardrail_action": response_metadata.get("guardrail_action"),
+                    "guardrail_reason": response_metadata.get("guardrail_reason"),
                     "capability_scope": decision.get("capability_scope"),
-                    "validation_passed": False,
+                    "validation_passed": response_metadata.get("validation_passed"),
+                    "evidence_validation": response_metadata.get("evidence_validation"),
                 },
             )
         self.strapi.sync_conversation(
@@ -2529,7 +2610,9 @@ Rules:
                     "pending_inputs": turn_plan.pending_inputs,
                     "context_decision": turn_plan.context_decision,
                     "validation_passed": True,
+                    "validation_confidence": 1.0,
                 }
+                response_text, metadata = self._apply_post_response_guardrails(response_text, metadata)
                 if short_term_enabled:
                     await self.short_term.add_message(
                         conversation_id=conversation_id,
@@ -2564,7 +2647,7 @@ Rules:
                     conversation_id=conversation_id,
                     citations=[],
                     context_used=0,
-                    confidence_score=1.0,
+                    confidence_score=min(1.0, max(0.0, float(metadata.get("validation_confidence", 1.0)))),
                     processing_time_ms=duration_ms,
                 )
 
@@ -2662,13 +2745,24 @@ Rules:
             if lalkitab_plan.handled and (
                 getattr(lalkitab_plan, "awaiting_place_choice", False) or lalkitab_plan.missing_input
             ):
-                clarification = lalkitab_plan.clarification
+                clarification, clarification_metadata = self._apply_post_response_guardrails(
+                    lalkitab_plan.clarification,
+                    {
+                        "lalkitab_runtime": True,
+                        "validation_passed": True,
+                        "validation_confidence": 1.0,
+                    },
+                )
                 if short_term_enabled:
                     await self.short_term.add_message(
                         conversation_id=conversation_id,
                         role=MessageRole.ASSISTANT,
                         content=clarification,
-                        metadata={"user_id": user_id, "lalkitab_pending": lalkitab_plan.pending_state},
+                        metadata={
+                            "user_id": user_id,
+                            "lalkitab_pending": lalkitab_plan.pending_state,
+                            "evidence_validation": clarification_metadata.get("evidence_validation"),
+                        },
                     )
                 self.strapi.sync_conversation(
                     conversation_id=conversation_id,
@@ -2839,6 +2933,7 @@ Rules:
                         "agent_steps": agent_metadata.get("steps_executed", 0),
                         "validation_passed": agent_metadata.get("validation_passed"),
                         "validation_issues": agent_metadata.get("validation_issues", []),
+                        "evidence_validation": agent_metadata.get("evidence_validation"),
                         "guardrail_action": agent_metadata.get("guardrail_action"),
                         "guardrail_reason": agent_metadata.get("guardrail_reason"),
                         "fallback_stage": agent_metadata.get("fallback_stage"),
@@ -3009,7 +3104,16 @@ Rules:
 
             guardrail_decision = self._evaluate_pre_response_guardrails(request.message, escalations)
             if guardrail_decision["action"] in {"block", "escalate"}:
-                response_text = guardrail_decision["message"]
+                response_text, guardrail_response_metadata = self._apply_post_response_guardrails(
+                    guardrail_decision["message"],
+                    {
+                        "validation_confidence": 1.0,
+                        "validation_passed": False,
+                        "guardrail_action": guardrail_decision["action"],
+                        "guardrail_reason": guardrail_decision["reason"],
+                        "_trusted_safety_template": True,
+                    },
+                )
                 if short_term_enabled:
                     await self.short_term.add_message(
                         conversation_id=conversation_id,
@@ -3017,10 +3121,11 @@ Rules:
                         content=response_text,
                         metadata={
                             "user_id": user_id,
-                            "guardrail_action": guardrail_decision["action"],
-                            "guardrail_reason": guardrail_decision["reason"],
+                            "guardrail_action": guardrail_response_metadata.get("guardrail_action"),
+                            "guardrail_reason": guardrail_response_metadata.get("guardrail_reason"),
                             "capability_scope": guardrail_decision.get("capability_scope"),
-                            "validation_passed": False,
+                            "validation_passed": guardrail_response_metadata.get("validation_passed"),
+                            "evidence_validation": guardrail_response_metadata.get("evidence_validation"),
                         },
                     )
                 self.strapi.sync_conversation(
@@ -3104,7 +3209,17 @@ Rules:
                     yield StreamingMessageResponse(**activity_stream_response_kwargs(activity, conversation_id))
 
             if turn_plan.should_short_circuit:
-                response_text = turn_plan.response_text
+                short_circuit_metadata = {
+                    "resolved_inputs": _sanitize_for_json(turn_plan.resolved_inputs),
+                    "pending_inputs": turn_plan.pending_inputs,
+                    "context_decision": turn_plan.context_decision,
+                    "validation_passed": True,
+                    "validation_confidence": 1.0,
+                }
+                response_text, short_circuit_metadata = self._apply_post_response_guardrails(
+                    turn_plan.response_text,
+                    short_circuit_metadata,
+                )
                 yield StreamingMessageResponse(
                     type="content",
                     content=response_text,
@@ -3130,7 +3245,8 @@ Rules:
                             "resolved_inputs": _sanitize_for_json(turn_plan.resolved_inputs),
                             "pending_inputs": turn_plan.pending_inputs,
                             "context_decision": turn_plan.context_decision,
-                            "validation_passed": True,
+                            "validation_passed": short_circuit_metadata.get("validation_passed"),
+                            "evidence_validation": short_circuit_metadata.get("evidence_validation"),
                         },
                     )
                 self.strapi.sync_conversation(
@@ -3145,7 +3261,10 @@ Rules:
                     content="",
                     conversation_id=conversation_id,
                     context_used=0,
-                    confidence_score=1.0,
+                    confidence_score=min(
+                        1.0,
+                        max(0.0, float(short_circuit_metadata.get("validation_confidence", 1.0))),
+                    ),
                     metadata={
                         "resolved_inputs": _sanitize_for_json(turn_plan.resolved_inputs),
                         "pending_inputs": turn_plan.pending_inputs,
@@ -3199,6 +3318,14 @@ Rules:
 
             # Birthplace disambiguation: pause and ask the user to pick a place.
             if agent_result is None and lalkitab_plan.handled and lalkitab_plan.awaiting_place_choice:
+                clarification, clarification_metadata = self._apply_post_response_guardrails(
+                    lalkitab_plan.clarification,
+                    {
+                        "lalkitab_runtime": True,
+                        "validation_passed": True,
+                        "validation_confidence": 1.0,
+                    },
+                )
                 disambiguation_metadata = {
                     "connector_id": "vedika_lal_kitab",
                     "connector_name": "Vedika Lal Kitab",
@@ -3210,17 +3337,21 @@ Rules:
                 }
                 yield StreamingMessageResponse(
                     type="place_disambiguation",
-                    content=lalkitab_plan.clarification,
+                    content=clarification,
                     conversation_id=conversation_id,
                     metadata=disambiguation_metadata,
                 )
-                yield StreamingMessageResponse(type="content", content=lalkitab_plan.clarification, conversation_id=conversation_id)
+                yield StreamingMessageResponse(type="content", content=clarification, conversation_id=conversation_id)
                 if short_term_enabled:
                     await self.short_term.add_message(
                         conversation_id=conversation_id,
                         role=MessageRole.ASSISTANT,
-                        content=lalkitab_plan.clarification,
-                        metadata={"user_id": user_id, "lalkitab_pending": lalkitab_plan.pending_state},
+                        content=clarification,
+                        metadata={
+                            "user_id": user_id,
+                            "lalkitab_pending": lalkitab_plan.pending_state,
+                            "evidence_validation": clarification_metadata.get("evidence_validation"),
+                        },
                     )
                 yield StreamingMessageResponse(
                     type="done",
@@ -3231,6 +3362,14 @@ Rules:
                 return
 
             if agent_result is None and lalkitab_plan.handled and lalkitab_plan.missing_input:
+                clarification, clarification_metadata = self._apply_post_response_guardrails(
+                    lalkitab_plan.clarification,
+                    {
+                        "lalkitab_runtime": True,
+                        "validation_passed": True,
+                        "validation_confidence": 1.0,
+                    },
+                )
                 missing_metadata = {
                     "connector_id": "vedika_lal_kitab",
                     "connector_name": "Vedika Lal Kitab",
@@ -3242,17 +3381,21 @@ Rules:
                 }
                 yield StreamingMessageResponse(
                     type="missing_input",
-                    content=lalkitab_plan.clarification,
+                    content=clarification,
                     conversation_id=conversation_id,
                     metadata=missing_metadata,
                 )
-                yield StreamingMessageResponse(type="content", content=lalkitab_plan.clarification, conversation_id=conversation_id)
+                yield StreamingMessageResponse(type="content", content=clarification, conversation_id=conversation_id)
                 if short_term_enabled:
                     await self.short_term.add_message(
                         conversation_id=conversation_id,
                         role=MessageRole.ASSISTANT,
-                        content=lalkitab_plan.clarification,
-                        metadata={"user_id": user_id, "lalkitab_pending": lalkitab_plan.pending_state},
+                        content=clarification,
+                        metadata={
+                            "user_id": user_id,
+                            "lalkitab_pending": lalkitab_plan.pending_state,
+                            "evidence_validation": clarification_metadata.get("evidence_validation"),
+                        },
                     )
                 yield StreamingMessageResponse(
                     type="done",
@@ -3265,6 +3408,13 @@ Rules:
             connector_preflight = [] if turn_plan.tool_plan or lalkitab_plan.handled else self._connector_missing_inputs_for_message(runtime_message)
             if connector_preflight:
                 first_missing = connector_preflight[0]
+                clarification, _ = self._apply_post_response_guardrails(
+                    (
+                        "I need a little more information before I can call the configured source: "
+                        f"{', '.join(first_missing.get('missing_input') or [])}."
+                    ),
+                    {"validation_passed": True, "validation_confidence": 1.0},
+                )
                 yield StreamingMessageResponse(
                     type="missing_input",
                     content=(
@@ -3273,10 +3423,6 @@ Rules:
                     ),
                     conversation_id=conversation_id,
                     metadata=first_missing,
-                )
-                clarification = (
-                    "I need a little more information before I can call the configured source: "
-                    f"{', '.join(first_missing.get('missing_input') or [])}."
                 )
                 yield StreamingMessageResponse(type="content", content=clarification, conversation_id=conversation_id)
                 yield StreamingMessageResponse(
@@ -3689,6 +3835,7 @@ Rules:
                         "agent_steps": agent_metadata.get("steps_executed", 0),
                         "validation_passed": agent_metadata.get("validation_passed"),
                         "validation_issues": agent_metadata.get("validation_issues", []),
+                        "evidence_validation": agent_metadata.get("evidence_validation"),
                         "guardrail_action": agent_metadata.get("guardrail_action"),
                         "guardrail_reason": agent_metadata.get("guardrail_reason"),
                         "fallback_stage": agent_metadata.get("fallback_stage"),

@@ -8,7 +8,7 @@ import uuid
 import json
 import math
 from typing import List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import UploadFile
 import structlog
 import httpx
@@ -33,6 +33,36 @@ class IngestionStorageError(RuntimeError):
     """Raised when a chunk cannot be durably stored in every configured backend."""
 
 
+def _utc_timestamp() -> str:
+    """Return an unambiguous UTC timestamp for durable job state."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _public_job_error(exc: Exception) -> str:
+    """Map backend failures to a safe status message for dashboard clients."""
+    if isinstance(exc, IngestionEmbeddingError):
+        return "Document embedding failed"
+    if isinstance(exc, IngestionStorageError):
+        return "Failed to store knowledge-base document"
+    return "Document processing failed"
+
+
+_SAFE_JOB_ERRORS = {
+    "Document embedding failed",
+    "Failed to store knowledge-base document",
+    "Document processing failed",
+}
+
+
+def _safe_stored_job_error(status: str, error: object) -> Optional[str]:
+    """Keep legacy job records from exposing stored provider diagnostics."""
+    if status != "error":
+        return None
+    if isinstance(error, str) and error in _SAFE_JOB_ERRORS:
+        return error
+    return "Document processing failed"
+
+
 class IngestionService:
     """Service for document ingestion and processing."""
     
@@ -50,7 +80,12 @@ class IngestionService:
             "model": config["model"],
         }
     
-    async def start_ingestion_job(self, files: List[dict], agent_id: Optional[str] = None) -> str:
+    async def start_ingestion_job(
+        self,
+        files: List[dict],
+        agent_id: Optional[str] = None,
+        brand_id: Optional[str] = None,
+    ) -> str:
         """Start a new ingestion job."""
         job_id = str(uuid.uuid4())
 
@@ -59,8 +94,10 @@ class IngestionService:
             "files_count": len(files),
             "processed_count": 0,
             "agent_id": agent_id,
-            "created_at": datetime.utcnow().isoformat(),
-            "error": None
+            "brand_id": brand_id,
+            "created_at": _utc_timestamp(),
+            "completed_at": None,
+            "error": None,
         })
 
         logger.info("Started ingestion job", job_id=job_id, files_count=len(files), agent_id=agent_id)
@@ -93,12 +130,26 @@ class IngestionService:
 
                 logger.info("Processed file", job_id=job_id, filename=filename, chunks_count=len(chunks))
 
-            await self.job_store.update(job_id, {"status": "completed"})
+            await self.job_store.update(
+                job_id,
+                {"status": "completed", "completed_at": _utc_timestamp()},
+            )
             logger.info("Completed ingestion job", job_id=job_id)
 
-        except Exception as e:
-            await self.job_store.update(job_id, {"status": "error", "error": str(e)})
-            logger.error("Error processing documents", job_id=job_id, error=str(e))
+        except Exception as exc:
+            await self.job_store.update(
+                job_id,
+                {
+                    "status": "error",
+                    "error": _public_job_error(exc),
+                    "completed_at": _utc_timestamp(),
+                },
+            )
+            logger.error(
+                "ingestion_job_processing_failed",
+                job_id=job_id,
+                error_type=type(exc).__name__,
+            )
     
     async def process_chunk(
         self,
@@ -136,12 +187,12 @@ class IngestionService:
                 message="Chunk processed successfully"
             )
             
-        except Exception as e:
-            logger.error("Error processing chunk", error=str(e))
+        except Exception as exc:
+            logger.error("ingestion_chunk_processing_failed", error_type=type(exc).__name__)
             return IngestionResponse(
                 success=False,
                 chunk_id=None,
-                message=f"Error processing chunk: {str(e)}"
+                message="Unable to process chunk",
             )
     
     async def get_job_status(self, job_id: str) -> Optional[IngestionStatus]:
@@ -155,14 +206,19 @@ class IngestionService:
             status=job_info["status"],
             files_count=job_info["files_count"],
             processed_count=job_info["processed_count"],
-            error=job_info.get("error")
+            error=_safe_stored_job_error(job_info["status"], job_info.get("error")),
+            created_at=job_info.get("created_at"),
+            completed_at=job_info.get("completed_at"),
         )
 
     async def cancel_job(self, job_id: str) -> bool:
         """Cancel an ingestion job."""
         job_info = await self.job_store.get(job_id)
         if job_info:
-            await self.job_store.update(job_id, {"status": "cancelled"})
+            await self.job_store.update(
+                job_id,
+                {"status": "cancelled", "completed_at": _utc_timestamp()},
+            )
             logger.info("Cancelled ingestion job", job_id=job_id)
             return True
         return False

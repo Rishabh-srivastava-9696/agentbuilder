@@ -13,6 +13,7 @@ import structlog
 from ....dependencies import get_settings, get_knowledge_service
 from ....auth.dependencies import ensure_brand_access, ensure_permission, require_dashboard_access
 from ....auth.models import Permission, User
+from ....connections import connection_manager
 from ....services.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger()
@@ -23,6 +24,51 @@ def _authorize_brand(current_user: User | None, brand_id: str, permission: Permi
     """Enforce document permission and tenant scope before touching a brand DB."""
     ensure_permission(current_user, permission)
     ensure_brand_access(current_user, brand_id)
+
+
+async def _canonical_brand_id(system_db: Any, identifier: str) -> str:
+    """Resolve a brand ID or slug to its canonical ID for scope comparison."""
+    brand = await system_db.brands.find_one({
+        "$or": [
+            {"id": identifier},
+            {"slug": identifier},
+        ]
+    })
+    return str(brand.get("id") or identifier) if brand else identifier
+
+
+async def _authorize_brand_agent_scope(
+    current_user: User | None,
+    brand_id: str,
+    agent_id: Optional[str],
+    permission: Permission,
+) -> None:
+    """Authorize a brand and, when present, bind the agent to that exact tenant.
+
+    Knowledge APIs retain support for callers that use a brand slug, but the
+    agent's canonical brand record remains the authority.  This prevents a
+    valid tenant user from using another tenant's agent ID to scope a write or
+    read inside their own brand database.
+    """
+    ensure_permission(current_user, permission)
+    if not agent_id:
+        ensure_brand_access(current_user, brand_id)
+        return
+
+    system_db = connection_manager.get_system_db()
+    requested_brand_id = await _canonical_brand_id(system_db, brand_id)
+    ensure_brand_access(current_user, requested_brand_id)
+
+    agent = await system_db.agents.find_one({"id": agent_id})
+    if not agent or not agent.get("brand_id"):
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    agent_brand_id = await _canonical_brand_id(system_db, str(agent["brand_id"]))
+    if agent_brand_id != requested_brand_id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Authorize the canonical agent scope as well as the caller-supplied alias.
+    ensure_brand_access(current_user, agent_brand_id)
 
 
 # ============================================================================
@@ -202,7 +248,6 @@ async def upload_document(
     3. Stored in MongoDB with structured metadata
     """
     try:
-        _authorize_brand(current_user, brand_id, Permission.DOCUMENT_WRITE)
         source_type = knowledge_service.detect_source_type(file.content_type, file.filename or "")
 
         if not source_type:
@@ -213,6 +258,13 @@ async def upload_document(
                     "Allowed: PDF, DOCX, TXT, MD, HTML, JSON, CSV"
                 )
             )
+
+        # Reject an invalid upload before resolving tenant state. Once the
+        # file is valid, bind any supplied agent to the authorized canonical
+        # brand before any storage or service work can occur.
+        await _authorize_brand_agent_scope(
+            current_user, brand_id, agent_id, Permission.DOCUMENT_WRITE
+        )
         
         # Parse structured metadata if provided
         import json
@@ -430,7 +482,9 @@ async def get_knowledge_tree(
 ):
     """Return a filesystem-style folder/file tree for the knowledge base."""
     try:
-        _authorize_brand(current_user, brand_id, Permission.DOCUMENT_READ)
+        await _authorize_brand_agent_scope(
+            current_user, brand_id, agent_id, Permission.DOCUMENT_READ
+        )
         tree = await knowledge_service.list_knowledge_tree(
             brand_id=brand_id,
             agent_id=agent_id,
@@ -452,7 +506,9 @@ async def create_folder(
 ):
     """Create or ensure a knowledge folder."""
     try:
-        _authorize_brand(current_user, request.brand_id, Permission.DOCUMENT_WRITE)
+        await _authorize_brand_agent_scope(
+            current_user, request.brand_id, request.agent_id, Permission.DOCUMENT_WRITE
+        )
         folder = await knowledge_service.create_folder(
             brand_id=request.brand_id,
             path=request.path or knowledge_service.folder_path_from_name(
@@ -482,7 +538,9 @@ async def move_knowledge_item_by_body(
     if not request.item_id:
         raise HTTPException(status_code=400, detail="item_id is required")
     try:
-        _authorize_brand(current_user, request.brand_id, Permission.DOCUMENT_WRITE)
+        await _authorize_brand_agent_scope(
+            current_user, request.brand_id, request.agent_id, Permission.DOCUMENT_WRITE
+        )
         item = await knowledge_service.move_item(
             brand_id=request.brand_id,
             item_id=request.item_id,
@@ -511,7 +569,9 @@ async def rename_knowledge_item_by_body(
     if not request.item_id:
         raise HTTPException(status_code=400, detail="item_id is required")
     try:
-        _authorize_brand(current_user, request.brand_id, Permission.DOCUMENT_WRITE)
+        await _authorize_brand_agent_scope(
+            current_user, request.brand_id, request.agent_id, Permission.DOCUMENT_WRITE
+        )
         item = await knowledge_service.rename_item(
             brand_id=request.brand_id,
             item_id=request.item_id,
@@ -541,7 +601,9 @@ async def delete_knowledge_item_by_query(
     """Delete a knowledge item (file or folder) — id in query so folder paths
     with slashes route correctly. Folders reparent their documents to the parent."""
     try:
-        _authorize_brand(current_user, brand_id, Permission.DOCUMENT_DELETE)
+        await _authorize_brand_agent_scope(
+            current_user, brand_id, agent_id, Permission.DOCUMENT_DELETE
+        )
         result = await knowledge_service.delete_item(item_id, brand_id=brand_id, agent_id=agent_id)
         if not result.get("deleted"):
             raise HTTPException(status_code=404, detail=f"Knowledge item not found: {item_id}")
@@ -562,7 +624,9 @@ async def move_knowledge_item(
 ):
     """Move a knowledge item to another folder (legacy path-param route)."""
     try:
-        _authorize_brand(current_user, request.brand_id, Permission.DOCUMENT_WRITE)
+        await _authorize_brand_agent_scope(
+            current_user, request.brand_id, request.agent_id, Permission.DOCUMENT_WRITE
+        )
         item = await knowledge_service.move_item(
             brand_id=request.brand_id,
             item_id=item_id,
@@ -590,7 +654,9 @@ async def rename_knowledge_item(
 ):
     """Rename a knowledge file or folder."""
     try:
-        _authorize_brand(current_user, request.brand_id, Permission.DOCUMENT_WRITE)
+        await _authorize_brand_agent_scope(
+            current_user, request.brand_id, request.agent_id, Permission.DOCUMENT_WRITE
+        )
         item = await knowledge_service.rename_item(
             brand_id=request.brand_id,
             item_id=item_id,
@@ -638,7 +704,9 @@ async def retrieve_knowledge(
 ):
     """Run an admin retrieval preview across all knowledge or a selected folder."""
     try:
-        _authorize_brand(current_user, request.brand_id, Permission.DOCUMENT_READ)
+        await _authorize_brand_agent_scope(
+            current_user, request.brand_id, request.agent_id, Permission.DOCUMENT_READ
+        )
         chunks = await knowledge_service.retrieve(
             brand_id=request.brand_id,
             query=request.query,

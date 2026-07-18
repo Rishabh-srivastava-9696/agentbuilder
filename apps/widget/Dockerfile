@@ -30,7 +30,14 @@ COPY docker-entrypoint.sh /docker-entrypoint.d/40-runtime-config.sh
 
 ENV API_BASE_URL=http://localhost:8000
 
-RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh
+RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh \
+    && chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/run /etc/nginx/conf.d /docker-entrypoint.d \
+    && sed -i \
+        -e 's|^user .*;|# worker user is the unprivileged container user|' \
+        -e 's|^pid .*;|pid /tmp/nginx.pid;|' \
+        /etc/nginx/nginx.conf
+
+USER nginx
 
 EXPOSE 5174
 

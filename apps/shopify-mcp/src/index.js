@@ -303,7 +303,7 @@ app.post('/webhooks', (req, res) => {
 
   const topic = req.headers['x-shopify-topic'] || 'unknown';
   const shop  = req.headers['x-shopify-shop-domain'] || 'unknown';
-  console.log(`Shopify webhook received: topic=${topic} shop=${shop}`);
+  console.log('Shopify webhook received', { topic, shop });
 
   // TODO: dispatch to topic-specific handlers (e.g. orders/create, products/update)
 
@@ -326,5 +326,5 @@ app.get('/', (_req, res) => {
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 app.listen(port, () => {
-  console.log(`Shopify MCP Hub running on port ${port}`);
+  console.log('Shopify MCP Hub running', { port });
 });

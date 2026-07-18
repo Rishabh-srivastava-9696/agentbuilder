@@ -3,6 +3,7 @@ import types
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
+from app.api.v1.endpoints import knowledge as knowledge_module
 from app.api.v1.endpoints.knowledge import _hydrate_product_cards, _product_card_from_data, upload_document
 from app.config import Settings
 from app.services.knowledge_service import KnowledgeService
@@ -214,8 +215,20 @@ class FakeEndpointKnowledgeService:
 
 
 @pytest.mark.asyncio
-async def test_upload_endpoint_accepts_supported_extension_when_mime_is_generic():
+async def test_upload_endpoint_accepts_supported_extension_when_mime_is_generic(monkeypatch):
     service = FakeEndpointKnowledgeService()
+
+    class Collection:
+        async def find_one(self, query):
+            if query.get("id") == "agent-1":
+                return {"id": "agent-1", "brand_id": "brand-1"}
+            return {"id": "brand-1", "slug": "brand-1"}
+
+    class SystemDb:
+        agents = Collection()
+        brands = Collection()
+
+    monkeypatch.setattr(knowledge_module.connection_manager, "get_system_db", lambda: SystemDb())
 
     response = await upload_document(
         background_tasks=BackgroundTasks(),
