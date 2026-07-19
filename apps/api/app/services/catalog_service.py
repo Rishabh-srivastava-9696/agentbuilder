@@ -15,7 +15,6 @@ from datetime import datetime
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import httpx
 import structlog
@@ -24,6 +23,14 @@ from app.config import Settings
 from app.connections import connection_manager
 from app.services.knowledge_service import KnowledgeService
 from . import catalog_network_safety
+from .catalog_currency import (
+    currency_with_source as _currency_with_source,
+    extract_catalog_currency as _extract_catalog_currency,
+    normalize_currency as _normalize_currency,
+    normalize_currency_code,
+    price_amount as _price_amount,
+    to_cents as _to_cents,
+)
 from .job_store import JobStore
 
 logger = structlog.get_logger()
@@ -158,27 +165,6 @@ def _detect_format(data: Any) -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _to_cents(value: Any) -> int:
-    try:
-        amount = Decimal(str(value).replace(",", "").strip())
-        return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    except (InvalidOperation, ValueError, TypeError):
-        return 0
-
-
-def _price_amount(value: Any) -> Any:
-    if isinstance(value, dict):
-        return value.get("amount") or value.get("value") or value.get("price") or 0
-    return value
-
-
-def _normalize_currency(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    currency = str(value).strip()
-    return currency.upper() if currency else None
-
-
 def normalize_shopify_store_url(value: Any) -> str:
     """Compatibility wrapper for the catalog network-safety boundary."""
     return catalog_network_safety.normalize_shopify_store_url(value)
@@ -206,65 +192,6 @@ async def validate_json_feed_url(value: Any) -> str:
         resolve_public_hostname=_resolve_public_hostname,
         is_myshopify_hostname=_is_myshopify_hostname,
     )
-
-
-def normalize_currency_code(value: Any, *, allow_empty: bool = True) -> Optional[str]:
-    """Normalize an explicit ISO-style three-letter currency code."""
-    currency = _normalize_currency(value)
-    if not currency and allow_empty:
-        return None
-    if not currency or not re.fullmatch(r"[A-Z]{3}", currency):
-        raise ValueError("Currency must be a three-letter code such as INR, USD, or EUR.")
-    return currency
-
-
-def _extract_catalog_currency(*sources: Optional[Dict[str, Any]]) -> Optional[str]:
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-
-        for key in ("currency", "currencyCode", "currency_code", "price_currency", "priceCurrency"):
-            currency = _normalize_currency(source.get(key))
-            if currency:
-                return currency
-
-        for price_key in ("price", "priceV2", "compare_at_price", "compareAtPrice"):
-            price = source.get(price_key)
-            if isinstance(price, dict):
-                currency = _extract_catalog_currency(price)
-                if currency:
-                    return currency
-
-        presentment_prices = source.get("presentment_prices")
-        if isinstance(presentment_prices, list):
-            for presentment in presentment_prices:
-                if not isinstance(presentment, dict):
-                    continue
-                currency = _extract_catalog_currency(presentment.get("price"), presentment)
-                if currency:
-                    return currency
-
-    return None
-
-
-def _currency_with_source(
-    *catalog_sources: Optional[Dict[str, Any]],
-    shopify_currency: Optional[str] = None,
-    fallback_currency: Optional[str] = None,
-) -> tuple[Optional[str], str]:
-    authoritative_currency = _normalize_currency(shopify_currency)
-    if authoritative_currency:
-        return authoritative_currency, "shopify_store"
-
-    catalog_currency = _extract_catalog_currency(*catalog_sources)
-    if catalog_currency:
-        return catalog_currency, "catalog"
-
-    configured_currency = _normalize_currency(fallback_currency)
-    if configured_currency:
-        return configured_currency, "configured_default"
-
-    return None, "missing"
 
 
 def _strip_html(text: str) -> str:
@@ -1156,7 +1083,12 @@ async def run_firecrawl_scrape(
             elif isinstance(raw_extract, dict):
                 extracted = raw_extract
             else:
-                extracted = raw_extract.dict() if hasattr(raw_extract, "dict") else {}
+                if hasattr(raw_extract, "model_dump"):
+                    extracted = raw_extract.model_dump()
+                elif hasattr(raw_extract, "dict"):
+                    extracted = raw_extract.dict()
+                else:
+                    extracted = {}
 
             # Normalise common LLM field-name variations → our schema keys
             field_aliases = {

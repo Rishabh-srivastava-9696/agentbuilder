@@ -488,7 +488,7 @@ Output JSON Format:
         return AgentResult(
             answer=final_answer,
             metadata={
-                "plan": plan.dict(),
+                "plan": plan.model_dump(),
                 "steps_executed": len(results),
                 "validation_passed": validation_passed,
                 "tool_results": results,  # Expose tool results for product/dealer extraction

@@ -3,7 +3,7 @@ import logging
 import re
 from typing import List, Optional, Union
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,13 @@ _preload_akv_secrets()
 
 class Settings(BaseSettings):
     """Application settings."""
+
+    model_config = SettingsConfigDict(
+        # Load from root .env (2 levels up from app/config.py).
+        env_file="../../.env",
+        case_sensitive=True,
+        extra="ignore",
+    )
     
     # API Configuration
     API_HOST: str = "0.0.0.0"
@@ -469,9 +476,3 @@ class Settings(BaseSettings):
             )
 
         return self
-
-    class Config:
-        # Load from root .env (2 levels up from app/config.py)
-        env_file = "../../.env"
-        case_sensitive = True
-        extra = "ignore"

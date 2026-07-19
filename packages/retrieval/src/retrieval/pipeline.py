@@ -111,7 +111,7 @@ class RetrievalPipeline:
         
         logger.info(
             "Retrieval pipeline initialized",
-            config=self.config.dict() if hasattr(self.config, 'dict') else str(self.config),
+            config=self.config.model_dump() if hasattr(self.config, "model_dump") else str(self.config),
             vector_backend=self.vector_backend,
         )
 

@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import uuid
 from datetime import datetime
 import structlog
@@ -49,6 +49,8 @@ class AgentUpdate(BaseModel):
 
 
 class Agent(AgentBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     brand_id: str
     brand_slug: str
@@ -58,9 +60,6 @@ class Agent(AgentBase):
     status: str
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 def generate_slug(name: str) -> str:
@@ -257,7 +256,7 @@ async def update_agent(
         ensure_permission(current_user, Permission.AGENT_WRITE)
         ensure_brand_access(current_user, existing_agent.get("brand_id"))
 
-        update_data = agent_update.dict(exclude_unset=True)
+        update_data = agent_update.model_dump(exclude_unset=True)
         target_brand = None
         if "brand_id" in update_data and update_data["brand_id"] != existing_agent.get("brand_id"):
             ensure_brand_access(current_user, update_data["brand_id"])

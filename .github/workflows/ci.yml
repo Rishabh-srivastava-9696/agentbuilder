@@ -46,6 +46,7 @@ jobs:
       - run: python -m pip check
       - run: python -m pytest -q
       - run: python ../../evals/run_safety_contracts.py
+      - run: python ../../evals/run_hybrid_rag_golden.py
       - run: python ../../scripts/generate_openapi.py --check
       - run: python ../../scripts/generate_postman_collection.py --check
 

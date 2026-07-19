@@ -25,6 +25,11 @@ from .knowledge_text_extraction import (
     detect_source_type,
     extract_text,
 )
+from .knowledge_paths import (
+    folder_path_from_name as _folder_path_from_name,
+    normalize_folder_path as _normalize_folder_path_value,
+    normalize_item_path as _normalize_item_path_value,
+)
 
 logger = structlog.get_logger()
 
@@ -47,23 +52,17 @@ class KnowledgeService:
         self.db = None
         self.collection = None
 
-    def _normalize_folder_path(self, path: Optional[str]) -> str:
-        raw_path = (path or "/").strip()
-        if not raw_path:
-            raw_path = "/"
-        if not raw_path.startswith("/"):
-            raw_path = f"/{raw_path}"
-        normalized = re.sub(r"/+", "/", raw_path).rstrip("/")
-        return normalized or "/"
+    @staticmethod
+    def _normalize_folder_path(path: Optional[str]) -> str:
+        return _normalize_folder_path_value(path)
 
-    def _normalize_item_path(self, folder: Optional[str], name: Optional[str]) -> tuple[str, str, str]:
-        clean_folder = self._normalize_folder_path(folder)
-        clean_name = (name or "untitled").strip().strip("/") or "untitled"
-        return clean_folder, clean_name, f"{clean_folder.rstrip('/')}/{clean_name}" if clean_folder != "/" else f"/{clean_name}"
+    @staticmethod
+    def _normalize_item_path(folder: Optional[str], name: Optional[str]) -> tuple[str, str, str]:
+        return _normalize_item_path_value(folder, name)
 
-    def folder_path_from_name(self, name: Optional[str], parent_path: Optional[str] = None) -> str:
-        _, clean_name, path = self._normalize_item_path(parent_path, name)
-        return path if clean_name else self._normalize_folder_path(parent_path)
+    @staticmethod
+    def folder_path_from_name(name: Optional[str], parent_path: Optional[str] = None) -> str:
+        return _folder_path_from_name(name, parent_path)
 
     def _normalize_currency(self, value: Any) -> Optional[str]:
         if value is None:

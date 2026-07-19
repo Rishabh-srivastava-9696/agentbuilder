@@ -157,7 +157,7 @@ class EpisodicMemory:
             await self._delete_oldest_fact(fact.user_id)
         
         # Prepare document
-        fact_doc = fact.dict()
+        fact_doc = fact.model_dump()
         
         # Encrypt PII if needed
         if fact.pii_encrypted:
@@ -167,7 +167,7 @@ class EpisodicMemory:
             try:
                 # Encrypt the fact value
                 pii_field = self.pii_vault.encrypt_field(fact.fact, "fact")
-                fact_doc["fact"] = pii_field.dict()
+                fact_doc["fact"] = pii_field.model_dump()
                 fact_doc["pii_encrypted"] = True
                 # Entity extraction keeps the source text in metadata.context.
                 # Leaving it intact would defeat the encrypted fact envelope.

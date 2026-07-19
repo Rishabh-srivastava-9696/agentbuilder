@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import uuid
 from datetime import datetime
 import structlog
@@ -39,6 +39,8 @@ class BrandUpdate(BaseModel):
     colors: Optional[dict] = None
 
 class Brand(BrandBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     slug: str
     contact_info: Optional[dict] = None
@@ -46,9 +48,6 @@ class Brand(BrandBase):
     colors: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 def generate_slug(name: str) -> str:
     """Generate a URL-friendly slug from the brand name."""
@@ -146,7 +145,7 @@ async def update_brand(
         if not existing_brand:
             raise HTTPException(status_code=404, detail="Brand not found")
         
-        update_data = brand_update.dict(exclude_unset=True)
+        update_data = brand_update.model_dump(exclude_unset=True)
         
         # Update slug if name changed
         if "name" in update_data:

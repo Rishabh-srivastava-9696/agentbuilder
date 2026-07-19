@@ -11,6 +11,26 @@ from tools.types import ToolResult
 
 from .artifact_registry import LAL_KITAB_TEMPLATE, normalize_agent_template
 from .context_connector_packs import built_in_geocode_endpoints, default_geocoding_config
+from . import lalkitab_birth_input as _birth_input
+from .lalkitab_birth_input import (
+    CITY_GEO_LOOKUP,
+    _MONTHS_PATTERN,
+    _NAME_PATTERNS,
+    _NAME_TOKEN,
+    _clean_birth_place,
+    _extract_name,
+    _extract_place_only_reply,
+    _infer_unlabeled_place,
+    _looks_like_question_or_intent,
+    _normalize_date,
+    _normalize_time,
+    _normalize_timezone,
+    _resolve_place,
+    _strip_question_clauses,
+    extract_lalkitab_birth_input,
+    format_lalkitab_missing_input_clarification,
+    message_contains_birth_details,
+)
 from .tool_registry import ContextConnectorTool
 from .kundali_chart import extract_kundali_chart_summary
 
@@ -37,24 +57,6 @@ LAL_KITAB_CHART_UNAVAILABLE_MESSAGE = (
     "calculated chart. Please try again shortly; if needed, confirm your birth "
     "date, time, and birthplace so I can recalculate it."
 )
-
-CITY_GEO_LOOKUP = {
-    "delhi": {"latitude": 28.6139, "longitude": 77.2090, "timezone": "+05:30", "label": "Delhi, India"},
-    "new delhi": {"latitude": 28.6139, "longitude": 77.2090, "timezone": "+05:30", "label": "New Delhi, India"},
-    "mumbai": {"latitude": 19.0760, "longitude": 72.8777, "timezone": "+05:30", "label": "Mumbai, India"},
-    "bombay": {"latitude": 19.0760, "longitude": 72.8777, "timezone": "+05:30", "label": "Mumbai, India"},
-    "bangalore": {"latitude": 12.9716, "longitude": 77.5946, "timezone": "+05:30", "label": "Bengaluru, India"},
-    "bengaluru": {"latitude": 12.9716, "longitude": 77.5946, "timezone": "+05:30", "label": "Bengaluru, India"},
-    "chennai": {"latitude": 13.0827, "longitude": 80.2707, "timezone": "+05:30", "label": "Chennai, India"},
-    "kolkata": {"latitude": 22.5726, "longitude": 88.3639, "timezone": "+05:30", "label": "Kolkata, India"},
-    "calcutta": {"latitude": 22.5726, "longitude": 88.3639, "timezone": "+05:30", "label": "Kolkata, India"},
-    "hyderabad": {"latitude": 17.3850, "longitude": 78.4867, "timezone": "+05:30", "label": "Hyderabad, India"},
-    "pune": {"latitude": 18.5204, "longitude": 73.8567, "timezone": "+05:30", "label": "Pune, India"},
-    "jaipur": {"latitude": 26.9124, "longitude": 75.7873, "timezone": "+05:30", "label": "Jaipur, India"},
-    "ahmedabad": {"latitude": 23.0225, "longitude": 72.5714, "timezone": "+05:30", "label": "Ahmedabad, India"},
-    "lucknow": {"latitude": 26.8467, "longitude": 80.9462, "timezone": "+05:30", "label": "Lucknow, India"},
-}
-
 
 GEOCODE_SEARCH_ENDPOINT = "geocode_search"
 GEOCODE_RESOLVE_ENDPOINT = "geocode_resolve"
@@ -165,138 +167,6 @@ def message_is_lalkitab_followup(message: str) -> bool:
         "this mean",
     )
     return any(term in text for term in followup_terms)
-
-
-def _normalize_date(value: str) -> str | None:
-    value = value.strip().replace(",", " ")
-    formats = (
-        "%Y-%m-%d",
-        "%d-%m-%Y",
-        "%d/%m/%Y",
-        "%d-%m-%y",
-        "%d/%m/%y",
-        "%d %B %Y",
-        "%d %b %Y",
-        "%B %d %Y",
-        "%b %d %Y",
-    )
-    for fmt in formats:
-        try:
-            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
-
-
-def _normalize_time(value: str) -> str | None:
-    raw = value.strip().lower().replace(".", "")
-    if re.fullmatch(r"\d{3,4}", raw):
-        raw = raw.zfill(4)
-        return f"{raw[:2]}:{raw[2:]}:00"
-    if re.fullmatch(r"\d{3,4}\s*(?:hrs|hours?)", raw):
-        digits = re.match(r"(\d{3,4})", raw).group(1)  # type: ignore[union-attr]
-        raw = digits.zfill(4)
-        return f"{raw[:2]}:{raw[2:]}:00"
-    formats = ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I %p")
-    normalized = raw.upper()
-    for fmt in formats:
-        try:
-            return datetime.strptime(normalized, fmt).strftime("%H:%M:%S")
-        except ValueError:
-            continue
-    return None
-
-
-def _normalize_timezone(value: str) -> str:
-    timezone = value.strip()
-    lowered = timezone.lower()
-    aliases = {
-        "ist": "+05:30",
-        "asia/kolkata": "+05:30",
-        "asia/calcutta": "+05:30",
-        "utc": "+00:00",
-        "z": "+00:00",
-    }
-    if lowered in aliases:
-        return aliases[lowered]
-    offset_match = re.fullmatch(r"UTC?([+-]\d{1,2})(?::?(\d{2}))?", timezone, re.IGNORECASE)
-    if offset_match:
-        hours = int(offset_match.group(1))
-        minutes = offset_match.group(2) or "00"
-        return f"{hours:+03d}:{minutes}"
-    plain_offset = re.fullmatch(r"([+-]\d{1,2})(?::?(\d{2}))?", timezone)
-    if plain_offset:
-        hours = int(plain_offset.group(1))
-        minutes = plain_offset.group(2) or "00"
-        return f"{hours:+03d}:{minutes}"
-    return timezone
-
-
-def _clean_birth_place(value: str) -> str:
-    # Stop the place capture at the next field label or the start of the question
-    # (e.g. "Delhi, India. TOB: 1526" → "Delhi, India"). Also cut on an arrow.
-    cleaned = re.split(
-        r"(?:->|→|\|)|"
-        r"\b(?:question|query|ask|will|should|can|dob|tob|pob|"
-        r"date\s+of\s+birth|time\s+of\s+birth|birth\s+time|place\s+of\s+birth)\b",
-        value,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    cleaned = re.sub(r"\b(?:born|birthplace)\b", " ", cleaned, flags=re.IGNORECASE)
-    # Drop time/preposition fragments that ride along with an unlabeled place
-    # ("1526 hrs time. delhi" → "delhi", "at in mumbai" → "mumbai").
-    cleaned = re.sub(r"\b(?:hrs?|hours?|ist|india\s+timezone)\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip(" .,-")
-    cleaned = re.sub(
-        r"^(?:(?:time|at|in|on|around|near)\b[\s.,-]*)+",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    cleaned = cleaned.strip(" .,-")
-    return cleaned
-
-
-def _resolve_place(place: str) -> dict[str, Any] | None:
-    text = re.sub(r"[^a-zA-Z,\s]", " ", place or "").lower()
-    parts = [part.strip() for part in text.split(",") if part.strip()]
-    candidates = [text.strip(), *parts]
-    for candidate in candidates:
-        candidate = re.sub(r"\s+", " ", candidate).strip()
-        if candidate in CITY_GEO_LOOKUP:
-            return CITY_GEO_LOOKUP[candidate]
-    for key, value in CITY_GEO_LOOKUP.items():
-        if re.search(rf"\b{re.escape(key)}\b", text):
-            return value
-    return None
-
-
-def _extract_place_only_reply(text: str) -> str | None:
-    cleaned = _clean_birth_place(text or "")
-    if not cleaned:
-        return None
-    if re.search(r"\d", cleaned) or _looks_like_question_or_intent(cleaned):
-        return None
-    words = [word for word in re.split(r"[\s,]+", cleaned) if word]
-    if not 1 <= len(words) <= 6:
-        return None
-    return cleaned
-
-
-def _looks_like_question_or_intent(text: str) -> bool:
-    lowered = (text or "").lower()
-    if "?" in lowered:
-        return True
-    return bool(
-        re.search(
-            r"\b(what|why|how|when|where|which|who|will|should|can|could|would|"
-            r"career|marriage|finance|relationship|health|remed\w*|predict\w*|"
-            r"kundli|kundali|horoscope|chart|please|question|query)\b",
-            lowered,
-        )
-    )
 
 
 _MONTHS_PATTERN = (
@@ -571,6 +441,27 @@ def format_lalkitab_missing_input_clarification(normalized: dict[str, Any], miss
     if deduped_missing == ["birth place (city and country)"]:
         return f"{prefix}Which city (and country) were you born in?"
     return f"{prefix}Please share the missing detail(s): {', '.join(deduped_missing)}."
+
+
+# Compatibility re-exports. The deterministic behavior is owned by the leaf
+# module; existing imports from this runtime remain valid.
+CITY_GEO_LOOKUP = _birth_input.CITY_GEO_LOOKUP
+_MONTHS_PATTERN = _birth_input._MONTHS_PATTERN
+_NAME_TOKEN = _birth_input._NAME_TOKEN
+_NAME_PATTERNS = _birth_input._NAME_PATTERNS
+_normalize_date = _birth_input._normalize_date
+_normalize_time = _birth_input._normalize_time
+_normalize_timezone = _birth_input._normalize_timezone
+_clean_birth_place = _birth_input._clean_birth_place
+_resolve_place = _birth_input._resolve_place
+_extract_place_only_reply = _birth_input._extract_place_only_reply
+_looks_like_question_or_intent = _birth_input._looks_like_question_or_intent
+_strip_question_clauses = _birth_input._strip_question_clauses
+_extract_name = _birth_input._extract_name
+_infer_unlabeled_place = _birth_input._infer_unlabeled_place
+message_contains_birth_details = _birth_input.message_contains_birth_details
+extract_lalkitab_birth_input = _birth_input.extract_lalkitab_birth_input
+format_lalkitab_missing_input_clarification = _birth_input.format_lalkitab_missing_input_clarification
 
 
 def select_lalkitab_endpoint_ids(message: str) -> list[str]:

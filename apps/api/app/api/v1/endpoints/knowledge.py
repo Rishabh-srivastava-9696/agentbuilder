@@ -195,7 +195,7 @@ class BulkUploadItem(BaseModel):
 class BulkUploadRequest(BaseModel):
     """Request for bulk JSON upload."""
     content_type: Literal["product", "dealer"]
-    items: List[BulkUploadItem] = Field(..., min_items=1, max_items=1000)
+    items: List[BulkUploadItem] = Field(..., min_length=1, max_length=1000)
     brand_id: str = Field(..., description="Brand/Agent ID")
     agent_id: Optional[str] = None
     folder_path: Optional[str] = None

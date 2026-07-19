@@ -5,7 +5,7 @@ Authentication data models.
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from bson import ObjectId
 
 
@@ -116,6 +116,8 @@ ROLE_PERMISSIONS = {
 
 class User(BaseModel):
     """User model."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: Optional[str] = Field(default=None, alias="_id")
     email: EmailStr
     username: str
@@ -132,13 +134,6 @@ class User(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: dict = Field(default_factory=dict)
     
-    class Config:
-        populate_by_name = True
-        json_encoders = {
-            ObjectId: str,
-            datetime: lambda v: v.isoformat()
-        }
-
     @model_validator(mode="before")
     @classmethod
     def normalize_legacy_fields(cls, data):
@@ -205,6 +200,8 @@ class UserUpdate(BaseModel):
 
 class UserResponse(BaseModel):
     """User response model (excludes password)."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str = Field(alias="_id")
     email: EmailStr
     username: str
@@ -216,10 +213,6 @@ class UserResponse(BaseModel):
     last_login: Optional[datetime]
     created_at: datetime
     
-    class Config:
-        populate_by_name = True
-
-
 class Token(BaseModel):
     """Token response model."""
     access_token: str
@@ -239,6 +232,8 @@ class TokenData(BaseModel):
 
 class RefreshToken(BaseModel):
     """Refresh token model."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: Optional[str] = Field(default=None, alias="_id")
     token_hash: str
     user_id: str
@@ -248,12 +243,10 @@ class RefreshToken(BaseModel):
     revoked_at: Optional[datetime] = None
     device_info: Optional[str] = None
     
-    class Config:
-        populate_by_name = True
-
-
 class APIKey(BaseModel):
     """API Key model."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: Optional[str] = Field(default=None, alias="_id")
     key_id: str  # First 8 chars of key (public identifier)
     key_hash: str  # Hashed full key
@@ -274,9 +267,6 @@ class APIKey(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     revoked_at: Optional[datetime] = None
     
-    class Config:
-        populate_by_name = True
-
     @model_validator(mode="before")
     @classmethod
     def normalize_legacy_fields(cls, data):
@@ -324,6 +314,8 @@ class APIKeyCreate(BaseModel):
 
 class APIKeyResponse(BaseModel):
     """API Key response model."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str = Field(alias="_id")
     key_id: str
     key: Optional[str] = None  # Only returned on creation
@@ -336,10 +328,6 @@ class APIKeyResponse(BaseModel):
     expires_at: Optional[datetime]
     created_at: datetime
     
-    class Config:
-        populate_by_name = True
-
-
 class LoginRequest(BaseModel):
     """Login request model."""
     username: str  # Can be email or username

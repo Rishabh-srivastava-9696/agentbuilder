@@ -211,7 +211,7 @@ class PIIVault:
             if field in vaulted and vaulted[field]:
                 try:
                     pii_field = self.encrypt_field(str(vaulted[field]), field)
-                    vaulted[field] = pii_field.dict()
+                    vaulted[field] = pii_field.model_dump()
                     logger.debug("Field vaulted", field=field)
                 except CryptoError as e:
                     logger.error("Failed to vault field", field=field, error=str(e))
