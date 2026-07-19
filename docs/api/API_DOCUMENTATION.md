@@ -2,11 +2,24 @@
 
 This is the integration contract for the production API. The generated OpenAPI
 schema at `GET /openapi.json` (and Swagger UI at `GET /docs`) is the endpoint
-and field-level source of truth for the deployed build. Regenerate client code
-from that schema as part of every release; do not rely on historical examples
-or undocumented endpoints.
+and field-level source of truth for the deployed build. The committed
+[OpenAPI 3.1 snapshot](./openapi.json) and generated
+[Postman collection](./Agent_Builder_Platform.postman_collection.json) are
+regenerated from FastAPI and freshness-checked in CI. Do not edit either file
+by hand.
 
 Base URL: `https://<api-host>`
+
+To intentionally change the public HTTP contract, update the route/schema,
+then run from the repository root:
+
+```bash
+python scripts/generate_openapi.py
+python scripts/generate_postman_collection.py
+```
+
+The WebSocket protocols remain documented here and in the P4 contract because
+OpenAPI does not model WebSocket upgrades.
 
 ## Authentication and tenant scope
 
@@ -203,3 +216,5 @@ hardening contract](./P4_EDGE_AND_KNOWLEDGE_HARDENING.md) for WebSocket,
 rate-limit, Qdrant, and legacy knowledge-upload requirements.
 See the [P5 Shopify lifecycle and release-evidence contract](./P5_SHOPIFY_OPERATIONS.md)
 for durable catalog sync, webhook, SBOM, and operational requirements.
+See the [P6 canonical source and API-contract contract](./P6_CANONICAL_SOURCE_AND_API_CONTRACT.md)
+for shared-package ownership and generated API artefacts.

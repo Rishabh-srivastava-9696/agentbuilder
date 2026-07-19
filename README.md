@@ -71,7 +71,8 @@ Core services:
 | Redis | Compose service | internal | Rate limits, jobs, pub/sub, session state |
 
 The API image is built from the repository root so it installs the same canonical
-`packages/` source used in development and CI. The admin, widget, and Shopify
+`packages/` source used in development and CI. There is no API-local copy of
+these packages; changes belong in the root tree. The admin, widget, and Shopify
 MCP services retain independent build contexts.
 
 ---
@@ -315,6 +316,9 @@ Current docs:
 - [Vector Database Architecture](./docs/VECTOR_DATABASE_ARCHITECTURE.md)
 - [Hybrid RAG Workflow](./docs/HYBRID_RAG_WORKFLOW.md)
 - [API Documentation](./docs/api/API_DOCUMENTATION.md)
+- [Generated OpenAPI 3.1 Contract](./docs/api/openapi.json)
+- [Generated Postman Collection](./docs/api/Agent_Builder_Platform.postman_collection.json)
+- [Canonical Source and API Contract](./docs/api/P6_CANONICAL_SOURCE_AND_API_CONTRACT.md)
 - [Agent/Coding Contracts](./AGENTS.md)
 
 ---
