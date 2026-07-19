@@ -63,15 +63,16 @@ The permission required matches the operation: `document:read`,
 | `POST /api/v1/knowledge/upload` | Multipart form must include the target `brand_id`; the operator must own that brand. |
 | `POST /api/v1/knowledge/bulk-upload` | Body contains `brand_id`; the operator must own that brand. |
 | `GET /api/v1/knowledge/tree`, document preview/list/delete, folder CRUD, and retrieval preview | Include `brand_id`; cross-tenant access is rejected. |
-| `POST /api/v1/ingest/documents?agent_id=...` | `agent_id` is required and controls the only permitted storage destination. |
+| `POST /api/v1/ingest/documents?agent_id=...` | `agent_id` is required and controls the only permitted storage destination. Clients should send `Idempotency-Key` when retrying an upload; same key plus different source returns `409`. |
 | `POST /api/v1/ingest/chunks` | Body must include `agent_id`. User metadata cannot choose the destination tenant. |
-| `GET /api/v1/ingest/status/{job_id}` and `DELETE /api/v1/ingest/jobs/{job_id}` | The job is authorized through its owning agent. Legacy unscoped jobs are not exposed. |
+| `GET /api/v1/ingest/status/{job_id}` and `DELETE /api/v1/ingest/jobs/{job_id}` | The job is authorized through its immutable creation-time brand scope. Legacy unscoped jobs are not exposed. |
 | `GET /api/v1/ingest/documents?agent_id=...` | `agent_id` is required. |
 
-Ingestion fails closed: an embedding provider failure, malformed/all-zero
-vector, or durable-store failure marks the job as an error. Clients must not
-treat a `processing` response as proof that searchable content exists; poll the
-job status until `completed`.
+`POST /api/v1/ingest/documents` returns `pending` only after encrypted source
+payloads and an immutable, Mongo-backed job have been persisted. A separate
+worker performs staging and deterministic publish retries. Clients must not
+treat `pending` or `processing` as proof that searchable content exists; poll
+until `completed`, `error`, or `cancelled`.
 
 ## Commerce catalog and Shopify
 
@@ -163,4 +164,6 @@ See [P0 security migration](./P0_SECURITY_MIGRATION.md) for rollout order,
 client-impact checklist, and operational verification, and the
 [P1 reliability contract](./P1_RELIABILITY_CONTRACT.md) for client migration
 and deployment checks. See the [P2 production hardening contract](./P2_PRODUCTION_HARDENING.md)
-for durable job status, tenant-control-plane, and evidence-validation behavior.
+for tenant-control-plane and evidence-validation behavior, and the
+[P3 durable-ingestion contract](./P3_DURABLE_INGESTION.md) for queue, retry,
+worker, and source-payload behavior.

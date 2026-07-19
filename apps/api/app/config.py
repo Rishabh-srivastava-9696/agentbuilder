@@ -212,6 +212,14 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 10
     ALLOWED_FILE_TYPES: str = "pdf,txt,md,docx,html"
     UPLOAD_DIR: str = "./uploads"
+    # Durable ingestion is processed by a separate Mongo-backed worker. Source
+    # bytes are encrypted and TTL-bound in Mongo, never held in a job/cache row.
+    INGESTION_JOB_TTL_SECONDS: int = 86400
+    INGESTION_PAYLOAD_TTL_SECONDS: int = 86400
+    INGESTION_LEASE_SECONDS: int = 120
+    INGESTION_MAX_ATTEMPTS: int = 3
+    INGESTION_RETRY_DELAY_SECONDS: int = 10
+    INGESTION_WORKER_POLL_SECONDS: float = 1.0
     
     # Security Configuration
     SECRET_KEY: str  # Required — set via SECRET_KEY env var or Azure Key Vault
@@ -287,12 +295,19 @@ class Settings(BaseSettings):
             return v.lower() in ("true", "1", "yes", "on")
         return v
     
-    @field_validator("API_WORKERS", "RATE_LIMIT_REQUESTS_PER_MINUTE", "RATE_LIMIT_BURST", "RATE_LIMIT_POLICY_WIDGET_CHAT", "RATE_LIMIT_POLICY_WIDGET_STREAM", "RATE_LIMIT_POLICY_WIDGET_WS_CONNECT", "RATE_LIMIT_POLICY_WIDGET_WS_MESSAGE", "RATE_LIMIT_POLICY_ADMIN_API", "RATE_LIMIT_POLICY_UPLOAD", "RATE_LIMIT_POLICY_STRAPI_SYNC", "MAX_FILE_SIZE_MB", "ACCESS_TOKEN_EXPIRE_MINUTES", "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", "SHORT_TERM_TTL", "EPISODIC_TTL", "SUMMARY_CACHE_TTL", "AUTO_SUMMARY_TURNS", "MAX_MESSAGES_PER_CONVERSATION", "MAX_FACTS_PER_USER", "MAX_SUMMARIES_PER_CONVERSATION", "REDIS_CONNECTION_TIMEOUT", "SUMMARY_MAX_TOKENS", "VECTOR_DIMENSIONS", mode="before")
+    @field_validator("API_WORKERS", "RATE_LIMIT_REQUESTS_PER_MINUTE", "RATE_LIMIT_BURST", "RATE_LIMIT_POLICY_WIDGET_CHAT", "RATE_LIMIT_POLICY_WIDGET_STREAM", "RATE_LIMIT_POLICY_WIDGET_WS_CONNECT", "RATE_LIMIT_POLICY_WIDGET_WS_MESSAGE", "RATE_LIMIT_POLICY_ADMIN_API", "RATE_LIMIT_POLICY_UPLOAD", "RATE_LIMIT_POLICY_STRAPI_SYNC", "MAX_FILE_SIZE_MB", "INGESTION_JOB_TTL_SECONDS", "INGESTION_PAYLOAD_TTL_SECONDS", "INGESTION_LEASE_SECONDS", "INGESTION_MAX_ATTEMPTS", "INGESTION_RETRY_DELAY_SECONDS", "ACCESS_TOKEN_EXPIRE_MINUTES", "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", "SHORT_TERM_TTL", "EPISODIC_TTL", "SUMMARY_CACHE_TTL", "AUTO_SUMMARY_TURNS", "MAX_MESSAGES_PER_CONVERSATION", "MAX_FACTS_PER_USER", "MAX_SUMMARIES_PER_CONVERSATION", "REDIS_CONNECTION_TIMEOUT", "SUMMARY_MAX_TOKENS", "VECTOR_DIMENSIONS", mode="before")
     @classmethod
     def parse_int_fields(cls, v):
         """Parse integer fields from string."""
         if isinstance(v, str):
             return int(v)
+        return v
+
+    @field_validator("INGESTION_WORKER_POLL_SECONDS", mode="before")
+    @classmethod
+    def parse_ingestion_worker_poll_seconds(cls, v):
+        if isinstance(v, str):
+            return float(v)
         return v
     
     @field_validator("CONFIDENCE_THRESHOLD", "SUMMARY_TEMPERATURE", mode="before")

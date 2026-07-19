@@ -35,4 +35,8 @@ if [ "${ENVIRONMENT:-development}" = "production" ]; then
   esac
 fi
 
+if [ "${INGESTION_WORKER:-false}" = "true" ]; then
+  exec python -m app.workers.ingestion_worker
+fi
+
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

@@ -47,3 +47,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+
+  # Keep Compose-only production dependencies (MongoDB, Redis, and Qdrant)
+  # on the same reviewed digest-refresh cadence as service Dockerfiles.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

@@ -394,7 +394,7 @@ url_for() {
 
 deploy_api() {
   local image
-  image="$(build_image nova-api apps/api/Dockerfile apps/api)"
+  image="$(build_image nova-api apps/api/Dockerfile .)"
   ensure_local_secret_values_for_new_app "$API_APP" \
     SECRET_KEY ADMIN_API_KEY SETTINGS_ENCRYPTION_KEY PII_ENCRYPTION_KEY \
     MONGODB_URI REDIS_URL VOYAGE_API_KEY AZURE_OPENAI_API_KEY STRAPI_API_TOKEN

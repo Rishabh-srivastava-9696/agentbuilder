@@ -3,14 +3,20 @@ Ingestion API Endpoints
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Depends, Header, HTTPException
 from pydantic import BaseModel
 import structlog
 
 from commons.types.requests import IngestionRequest
 from commons.types.responses import IngestionResponse, IngestionStatus
 from ....dependencies import get_settings, get_ingestion_service
-from ....services.ingestion_service import IngestionService
+from ....services.ingestion_service import (
+    IngestionIdempotencyConflictError,
+    IngestionService,
+    InvalidIngestionInputError,
+)
+from ....services.ingestion_payload_store import IngestionPayloadStoreError
+from ....services.job_store import JobStoreUnavailableError
 from ....auth.dependencies import ensure_brand_access, ensure_permission, require_dashboard_access
 from ....auth.models import Permission, User
 from ....connections import connection_manager
@@ -76,16 +82,15 @@ async def _authorize_job(
 
 @router.post("/documents", response_model=DocumentUploadResponse)
 async def upload_documents(
-    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     agent_id: str = ...,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
     current_user: User | None = Depends(require_dashboard_access),
 ):
     """Upload and process documents for ingestion.
     
     Args:
-        background_tasks: FastAPI background tasks
         files: List of files to upload
         agent_id: Optional agent ID to associate with documents (query parameter)
         ingestion_service: Injected ingestion service
@@ -122,27 +127,43 @@ async def upload_documents(
                 'content_type': file.content_type
             })
         
-        # Start background ingestion job with agent_id
-        job_id = await ingestion_service.start_ingestion_job(
+        brand_id = agent.get("brand_id")
+        brand_slug = agent.get("brand_slug")
+        if not isinstance(brand_id, str) or not brand_id or not isinstance(brand_slug, str) or not brand_slug:
+            raise HTTPException(status_code=400, detail="Agent has no complete brand scope")
+        # The authorized agent's brand and chunking configuration are snapshotted
+        # at submission. No FastAPI background task retains request memory.
+        chunk_size, chunk_overlap = ingestion_service.snapshot_chunking_from_agent(agent)
+        job_id = await ingestion_service.submit_durable_job(
             file_contents,
-            agent_id,
-            agent.get("brand_id"),
+            agent_id=agent_id,
+            brand_id=brand_id,
+            brand_slug=brand_slug,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            idempotency_key=idempotency_key,
         )
-        background_tasks.add_task(ingestion_service.process_documents, job_id, file_contents, agent_id)
-        
-        logger.info("Document upload started", job_id=job_id, files_count=len(files), agent_id=agent_id)
+        logger.info("durable_document_upload_queued", job_id=job_id, files_count=len(files))
         
         return DocumentUploadResponse(
             job_id=job_id,
-            status="processing",
-            message="Documents uploaded and processing started",
+            status="pending",
+            message="Documents uploaded and queued for processing",
             documents_count=len(files)
         )
         
     except HTTPException:
         raise
+    except IngestionIdempotencyConflictError:
+        raise HTTPException(status_code=409, detail="Idempotency key was already used for a different document upload")
+    except InvalidIngestionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (JobStoreUnavailableError, IngestionPayloadStoreError):
+        raise HTTPException(status_code=503, detail="Document ingestion is temporarily unavailable")
     except Exception as e:
-        logger.error("Error uploading documents", error=str(e))
+        # Never log parser/provider exceptions here: they can include portions
+        # of an uploaded source. The worker logs only type and opaque job ID.
+        logger.error("document_upload_submission_failed", error_type=type(e).__name__)
         raise HTTPException(status_code=500, detail="Error uploading documents")
 
 
@@ -167,8 +188,8 @@ async def process_chunk(
         return response
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error processing chunk", error=str(e))
+    except Exception as exc:
+        logger.error("ingestion_chunk_request_failed", error_type=type(exc).__name__)
         raise HTTPException(status_code=500, detail="Error processing chunk")
 
 
@@ -188,8 +209,8 @@ async def get_ingestion_status(
         
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error getting job status", job_id=job_id, error=str(e))
+    except Exception as exc:
+        logger.error("ingestion_status_request_failed", job_id=job_id, error_type=type(exc).__name__)
         raise HTTPException(status_code=500, detail="Error getting job status")
 
 
@@ -209,8 +230,8 @@ async def cancel_ingestion_job(
         
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error cancelling job", job_id=job_id, error=str(e))
+    except Exception as exc:
+        logger.error("ingestion_cancel_request_failed", job_id=job_id, error_type=type(exc).__name__)
         raise HTTPException(status_code=500, detail="Error cancelling job")
 
 
@@ -230,6 +251,6 @@ async def get_documents(
         }
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error retrieving documents", agent_id=agent_id, error=str(e))
+    except Exception as exc:
+        logger.error("ingestion_documents_request_failed", agent_id=agent_id, error_type=type(exc).__name__)
         raise HTTPException(status_code=500, detail="Error retrieving documents")

@@ -43,6 +43,38 @@ services:
       retries: 3
       start_period: 20s
 
+  # Uses the exact API image and encrypted-source configuration, but executes
+  # only Mongo-claimed ingestion jobs. It is safe to run more than one replica:
+  # lease tokens fence stale workers and expired leases are reclaimed.
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: agentbuilder-api
+    container_name: agentbuilder-ingestion-worker
+    env_file:
+      - .env.docker
+    environment:
+      INGESTION_WORKER: "true"
+      SHOPIFY_MCP_URL: "http://shopify:3005/mcp"
+      QDRANT_URL: "http://qdrant:6333"
+      ENVIRONMENT: "${ENVIRONMENT:-production}"
+      DEBUG: "${DEBUG:-false}"
+      REQUIRE_MONGODB: "${REQUIRE_MONGODB:-true}"
+      REQUIRE_REDIS: "false"
+      ALLOW_ADMIN_KEY_BYPASS: "${ALLOW_ADMIN_KEY_BYPASS:-false}"
+      STRAPI_URL: "${DOCKER_STRAPI_URL:-http://host.docker.internal:1337}"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   # ── React Admin Dashboard ────────────────────────────────────────────────────
   admin:
     build:
@@ -119,7 +151,7 @@ services:
 
   # ── MongoDB ──────────────────────────────────────────────────────────────────
   mongodb:
-    image: mongo:7
+    image: mongo:7@sha256:d5b3ca8c3f3cdce78d44870dc0871b76d5235e9b2ad4ea6bea5d1fbff8027703
     container_name: agentbuilder-mongodb
     # Port not exposed to host in production. To connect with Compass locally,
     # temporarily add: ports: ["27017:27017"]
@@ -135,7 +167,7 @@ services:
 
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     container_name: agentbuilder-redis
     # Port not exposed to host in production. To inspect locally,
     # temporarily add: ports: ["6379:6379"]
@@ -150,7 +182,7 @@ services:
 
   # ── Local Vector DB ─────────────────────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:v1.12.5
+    image: qdrant/qdrant:v1.12.5@sha256:05fecce7dce45d1254e0468bc037e8210e187fd56fa847688b012293d5f08aae
     container_name: agentbuilder-qdrant
     ports:
       - "6333:6333"
