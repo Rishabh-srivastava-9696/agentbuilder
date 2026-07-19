@@ -12,7 +12,7 @@ from app.api.v1.endpoints import catalog as catalog_module
 from app.api.v1.endpoints import knowledge as knowledge_module
 from app.auth.dependencies import get_user_from_token_or_api_key, require_dashboard_access
 from app.auth.models import User, UserRole
-from app.dependencies import get_knowledge_service, get_runtime_settings_service
+from app.dependencies import get_catalog_sync_store, get_knowledge_service, get_runtime_settings_service
 from app.services import catalog_service
 
 
@@ -116,7 +116,22 @@ def catalog_app(monkeypatch, scoped_system_db):
     app = FastAPI()
     app.include_router(catalog_module.router, prefix="/api/v1/catalog")
     app.dependency_overrides[get_user_from_token_or_api_key] = _brand_admin
-    app.dependency_overrides[get_runtime_settings_service] = lambda: object()
+    class _RuntimeSettings:
+        def _encrypt(self, value):
+            return f"encrypted:{value}"
+
+        def _decrypt(self, value):
+            return value.removeprefix("encrypted:")
+
+    class _CatalogSyncStore:
+        async def enqueue_sync(self, **kwargs):
+            return ({"job_id": kwargs["job_id"], "status": "queued", "brand_id": kwargs["brand_id"]}, False)
+
+        async def get(self, _job_id):
+            return None
+
+    app.dependency_overrides[get_runtime_settings_service] = _RuntimeSettings
+    app.dependency_overrides[get_catalog_sync_store] = _CatalogSyncStore
     monkeypatch.setattr(
         catalog_module.connection_manager,
         "get_system_db",
@@ -125,32 +140,27 @@ def catalog_app(monkeypatch, scoped_system_db):
     return app
 
 
-def test_shopify_job_owner_is_created_before_worker_runs(monkeypatch, catalog_app):
+def test_shopify_job_owner_is_created_before_durable_worker_runs(monkeypatch, catalog_app):
     events = []
 
     async def create_job(job_id, job_type, brand_id, total=0):
         events.append(("create", job_id, job_type, brand_id, total))
 
-    async def fetch_shopify_products(store_url, access_token, job_id, brand_id, fallback_currency):
-        events.append(("worker", store_url, job_id, brand_id, fallback_currency))
-
     monkeypatch.setattr(catalog_module, "_upsert_sync_config", AsyncMock())
     monkeypatch.setattr(catalog_service, "create_job", create_job)
-    monkeypatch.setattr(catalog_service, "fetch_shopify_products", fetch_shopify_products)
 
     response = TestClient(catalog_app).post(
         "/api/v1/catalog/import/shopify",
-        json={"brand_id": "brand-a-alias", "store_url": "store.myshopify.com"},
+        json={"brand_id": "brand-a-alias", "store_url": "store.myshopify.com", "access_token": "shpat_test"},
     )
 
     assert response.status_code == 200
     assert events[0][0] == "create"
     assert events[0][3] == "brand-a"
-    assert events[1][0] == "worker"
-    assert events[1][3] == "brand-a"
+    assert len(events) == 1
 
 
-def test_manual_shopify_sync_creates_owned_job_before_worker_runs(monkeypatch, catalog_app):
+def test_manual_shopify_sync_creates_owned_job_before_durable_worker_runs(monkeypatch, catalog_app):
     events = []
     catalog_app  # Keep the fixture's dependency and connection overrides alive.
 
@@ -159,7 +169,12 @@ def test_manual_shopify_sync_creates_owned_job_before_worker_runs(monkeypatch, c
             if query == {"id": "brand-a"}:
                 return {
                     "id": "brand-a",
-                    "catalog_sync": {"source_type": "shopify", "source_url": "store.myshopify.com"},
+                    "catalog_sync": {
+                        "source_type": "shopify",
+                        "source_url": "https://store.myshopify.com",
+                        "access_token_encrypted": "encrypted:shpat_test",
+                        "enabled": True,
+                    },
                 }
             return await super().find_one(query, *_args, **_kwargs)
 
@@ -170,19 +185,14 @@ def test_manual_shopify_sync_creates_owned_job_before_worker_runs(monkeypatch, c
     async def create_job(job_id, job_type, brand_id, total=0):
         events.append(("create", job_id, job_type, brand_id, total))
 
-    async def fetch_shopify_products(store_url, access_token, job_id, brand_id, fallback_currency):
-        events.append(("worker", store_url, job_id, brand_id, fallback_currency))
-
     monkeypatch.setattr(catalog_service, "create_job", create_job)
-    monkeypatch.setattr(catalog_service, "fetch_shopify_products", fetch_shopify_products)
 
     response = TestClient(catalog_app).post("/api/v1/catalog/sync/brand-a")
 
     assert response.status_code == 200
     assert events[0][0] == "create"
     assert events[0][3] == "brand-a"
-    assert events[1][0] == "worker"
-    assert events[1][3] == "brand-a"
+    assert len(events) == 1
 
 
 def test_firecrawl_worker_receives_canonical_job_owner(monkeypatch, catalog_app):

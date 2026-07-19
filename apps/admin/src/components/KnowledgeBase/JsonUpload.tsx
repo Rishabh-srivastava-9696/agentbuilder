@@ -175,7 +175,7 @@ export default function JsonUpload({ contentType, onUpload, onBack, brandId = ''
 
   // Render new catalog tabs directly — they handle their own "Next" button
   if (uploadMethod === 'shopify') {
-    return <ShopifyTab brandId={brandId} onUpload={onUpload} onBack={() => setUploadMethod('file')} />;
+    return <ShopifyTab brandId={brandId} onBack={() => setUploadMethod('file')} />;
   }
   if (uploadMethod === 'json_url') {
     return <JsonUrlTab brandId={brandId} onUpload={onUpload} onBack={() => setUploadMethod('file')} />;

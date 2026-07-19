@@ -303,11 +303,41 @@ app.post('/webhooks', (req, res) => {
 
   const topic = req.headers['x-shopify-topic'] || 'unknown';
   const shop  = req.headers['x-shopify-shop-domain'] || 'unknown';
-  console.log('Shopify webhook received', { topic, shop });
+  const forwardUrl = process.env.SHOPIFY_WEBHOOK_FORWARD_URL;
+  if (!forwardUrl) {
+    // The bridge is not the source of truth for tenant mapping or catalog
+    // state. Acking here would permanently discard a valid Shopify event.
+    console.error('SHOPIFY_WEBHOOK_FORWARD_URL is not configured; webhook was not acknowledged', { topic, shop });
+    return res.status(503).send('Webhook processing is not configured');
+  }
 
-  // TODO: dispatch to topic-specific handlers (e.g. orders/create, products/update)
-
-  res.status(200).send('OK');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  fetch(forwardUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': req.get('content-type') || 'application/json',
+      'x-shopify-hmac-sha256': hmacHeader,
+      'x-shopify-topic': topic,
+      'x-shopify-shop-domain': shop,
+      ...(req.get('x-shopify-webhook-id') ? { 'x-shopify-webhook-id': req.get('x-shopify-webhook-id') } : {}),
+    },
+    body: req.rawBody,
+    redirect: 'manual',
+    signal: controller.signal,
+  }).then((response) => {
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error('Webhook forward redirect rejected');
+    }
+    if (!response.ok) {
+      throw new Error(`Webhook forward returned HTTP ${response.status}`);
+    }
+    console.log('Shopify webhook queued', { topic, shop });
+    return res.status(200).send('OK');
+  }).catch((err) => {
+    console.error('Shopify webhook forwarding failed', { topic, shop, error: err.name });
+    return res.status(503).send('Webhook queue unavailable');
+  }).finally(() => clearTimeout(timeout));
 });
 
 // Health check

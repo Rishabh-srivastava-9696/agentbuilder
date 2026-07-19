@@ -1127,7 +1127,12 @@ async def _hydrate_product_cards(kb_collection: Any, products: List[Dict[str, An
         )[0]
         siblings: List[Dict[str, Any]] = []
         for query in _variant_group_queries(selected):
-            cursor = kb_collection.find({"content_type": "product", **query})
+            cursor = kb_collection.find({
+                "content_type": "product",
+                "product_data.source_active": {"$ne": False},
+                "metadata.catalog_source.active": {"$ne": False},
+                **query,
+            })
             async for doc in cursor:
                 product_data = doc.get("product_data", {})
                 if product_data and product_data.get("sku"):
@@ -1227,7 +1232,9 @@ async def get_products_by_skus(
         matched_products = []
         cursor = kb_collection.find({
             'content_type': 'product',
-            'product_data.sku': {'$in': request.skus}
+            'product_data.sku': {'$in': request.skus},
+            'product_data.source_active': {'$ne': False},
+            'metadata.catalog_source.active': {'$ne': False},
         })
         
         async for doc in cursor:

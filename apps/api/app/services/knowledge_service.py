@@ -260,6 +260,50 @@ class KnowledgeService:
         })
         return counts
 
+    async def deactivate_shopify_catalog(
+        self,
+        brand_id: str,
+        *,
+        source_url: str,
+        product_id: Optional[str] = None,
+        reason: str,
+    ) -> int:
+        """Make Shopify products non-retrievable after delete/uninstall events.
+
+        We retain the historical record for auditability, but every retrieval
+        path already treats ``source_active`` as an availability predicate. A
+        product-specific action matches both the canonical source product id and
+        the stable source-key prefix so older catalog rows are covered too.
+        """
+        await self._ensure_connection(brand_id)
+        now = datetime.utcnow().isoformat()
+        query: Dict[str, Any] = {
+            "content_type": "product",
+            "metadata.catalog_source.type": "shopify",
+            "metadata.catalog_source.source_url": source_url,
+        }
+        if product_id:
+            escaped_product_id = re.escape(str(product_id))
+            query["$or"] = [
+                {"product_data.source_product_id": str(product_id)},
+                {"metadata.catalog_source.source_key": {"$regex": rf"^shopify:{escaped_product_id}(?::|$)"}},
+            ]
+
+        result = await self.collection.update_many(
+            query,
+            {
+                "$set": {
+                    "product_data.in_stock": False,
+                    "product_data.source_active": False,
+                    "metadata.catalog_source.active": False,
+                    "metadata.catalog_source.deactivation_reason": reason,
+                    "metadata.catalog_source.deactivated_at": now,
+                    "metadata.updated_at": now,
+                }
+            },
+        )
+        return int(getattr(result, "modified_count", 0) or 0)
+
     async def _get_knowledge_folders_collection(self, brand_id: str):
         db = await self._get_brand_database(brand_id)
         return db["knowledge_folders"]

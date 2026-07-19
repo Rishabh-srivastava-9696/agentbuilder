@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from typing import List, Optional, Union
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -227,6 +228,21 @@ class Settings(BaseSettings):
     INGESTION_MAX_ATTEMPTS: int = 3
     INGESTION_RETRY_DELAY_SECONDS: int = 10
     INGESTION_WORKER_POLL_SECONDS: float = 1.0
+
+    # Shopify catalog lifecycle. Catalog snapshots are processed by a separate
+    # Mongo-leased worker so request processes may restart without silently
+    # abandoning a sync.  Webhooks are opt-in because the endpoint requires the
+    # per-Shopify-app signing secret to be present.
+    SHOPIFY_ADMIN_API_VERSION: str = "2026-04"
+    SHOPIFY_WEBHOOKS_ENABLED: bool = False
+    SHOPIFY_WEBHOOK_SECRET: str = ""
+    SHOPIFY_WEBHOOK_MAX_BODY_BYTES: int = 1048576
+    CATALOG_SYNC_JOB_TTL_SECONDS: int = 604800
+    CATALOG_SYNC_LEASE_SECONDS: int = 180
+    CATALOG_SYNC_MAX_ATTEMPTS: int = 5
+    CATALOG_SYNC_RETRY_DELAY_SECONDS: int = 30
+    CATALOG_SYNC_WORKER_POLL_SECONDS: float = 2.0
+    CATALOG_SYNC_SCHEDULER_POLL_SECONDS: float = 60.0
     
     # Security Configuration
     SECRET_KEY: str  # Required — set via SECRET_KEY env var or Azure Key Vault
@@ -294,7 +310,7 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
     
-    @field_validator("REDIS_SSL", "API_RELOAD", "ENABLE_WEBSOCKETS", "ENABLE_SSE", "ENABLE_METRICS", "ENABLE_TRACING", "ENABLE_HUMAN_TAKEOVER", "ENABLE_AUTO_SUMMARY", "ENABLE_PII_VAULTING", "ENABLE_FACT_EXTRACTION", "ENABLE_GRAPH_RULES", "ENABLE_TTL_CLEANUP", "REDIS_FALLBACK_TO_MONGO", "USE_AZURE_KEYVAULT", "ALLOW_PUBLIC_SIGNUP", "RATE_LIMIT_FAIL_CLOSED", "ATLAS_AUTO_CREATE_VECTOR_INDEXES", mode="before")
+    @field_validator("REDIS_SSL", "API_RELOAD", "ENABLE_WEBSOCKETS", "ENABLE_SSE", "ENABLE_METRICS", "ENABLE_TRACING", "ENABLE_HUMAN_TAKEOVER", "ENABLE_AUTO_SUMMARY", "ENABLE_PII_VAULTING", "ENABLE_FACT_EXTRACTION", "ENABLE_GRAPH_RULES", "ENABLE_TTL_CLEANUP", "REDIS_FALLBACK_TO_MONGO", "USE_AZURE_KEYVAULT", "ALLOW_PUBLIC_SIGNUP", "RATE_LIMIT_FAIL_CLOSED", "ATLAS_AUTO_CREATE_VECTOR_INDEXES", "SHOPIFY_WEBHOOKS_ENABLED", mode="before")
     @classmethod
     def parse_bool_fields(cls, v):
         """Parse boolean fields from string."""
@@ -302,7 +318,7 @@ class Settings(BaseSettings):
             return v.lower() in ("true", "1", "yes", "on")
         return v
     
-    @field_validator("API_WORKERS", "RATE_LIMIT_REQUESTS_PER_MINUTE", "RATE_LIMIT_BURST", "RATE_LIMIT_POLICY_WIDGET_CHAT", "RATE_LIMIT_POLICY_WIDGET_STREAM", "RATE_LIMIT_POLICY_WIDGET_WS_CONNECT", "RATE_LIMIT_POLICY_WIDGET_WS_MESSAGE", "RATE_LIMIT_POLICY_ADMIN_API", "RATE_LIMIT_POLICY_UPLOAD", "RATE_LIMIT_POLICY_STRAPI_SYNC", "MAX_FILE_SIZE_MB", "MAX_UPLOAD_FILES", "MAX_UPLOAD_TOTAL_SIZE_MB", "MAX_ARCHIVE_FILES", "MAX_ARCHIVE_UNCOMPRESSED_SIZE_MB", "MAX_ARCHIVE_COMPRESSION_RATIO", "INGESTION_JOB_TTL_SECONDS", "INGESTION_PAYLOAD_TTL_SECONDS", "INGESTION_LEASE_SECONDS", "INGESTION_MAX_ATTEMPTS", "INGESTION_RETRY_DELAY_SECONDS", "ACCESS_TOKEN_EXPIRE_MINUTES", "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", "SHORT_TERM_TTL", "EPISODIC_TTL", "SUMMARY_CACHE_TTL", "AUTO_SUMMARY_TURNS", "MAX_MESSAGES_PER_CONVERSATION", "MAX_FACTS_PER_USER", "MAX_SUMMARIES_PER_CONVERSATION", "REDIS_CONNECTION_TIMEOUT", "SUMMARY_MAX_TOKENS", "VECTOR_DIMENSIONS", mode="before")
+    @field_validator("API_WORKERS", "RATE_LIMIT_REQUESTS_PER_MINUTE", "RATE_LIMIT_BURST", "RATE_LIMIT_POLICY_WIDGET_CHAT", "RATE_LIMIT_POLICY_WIDGET_STREAM", "RATE_LIMIT_POLICY_WIDGET_WS_CONNECT", "RATE_LIMIT_POLICY_WIDGET_WS_MESSAGE", "RATE_LIMIT_POLICY_ADMIN_API", "RATE_LIMIT_POLICY_UPLOAD", "RATE_LIMIT_POLICY_STRAPI_SYNC", "MAX_FILE_SIZE_MB", "MAX_UPLOAD_FILES", "MAX_UPLOAD_TOTAL_SIZE_MB", "MAX_ARCHIVE_FILES", "MAX_ARCHIVE_UNCOMPRESSED_SIZE_MB", "MAX_ARCHIVE_COMPRESSION_RATIO", "INGESTION_JOB_TTL_SECONDS", "INGESTION_PAYLOAD_TTL_SECONDS", "INGESTION_LEASE_SECONDS", "INGESTION_MAX_ATTEMPTS", "INGESTION_RETRY_DELAY_SECONDS", "SHOPIFY_WEBHOOK_MAX_BODY_BYTES", "CATALOG_SYNC_JOB_TTL_SECONDS", "CATALOG_SYNC_LEASE_SECONDS", "CATALOG_SYNC_MAX_ATTEMPTS", "CATALOG_SYNC_RETRY_DELAY_SECONDS", "ACCESS_TOKEN_EXPIRE_MINUTES", "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", "SHORT_TERM_TTL", "EPISODIC_TTL", "SUMMARY_CACHE_TTL", "AUTO_SUMMARY_TURNS", "MAX_MESSAGES_PER_CONVERSATION", "MAX_FACTS_PER_USER", "MAX_SUMMARIES_PER_CONVERSATION", "REDIS_CONNECTION_TIMEOUT", "SUMMARY_MAX_TOKENS", "VECTOR_DIMENSIONS", mode="before")
     @classmethod
     def parse_int_fields(cls, v):
         """Parse integer fields from string."""
@@ -310,7 +326,7 @@ class Settings(BaseSettings):
             return int(v)
         return v
 
-    @field_validator("INGESTION_WORKER_POLL_SECONDS", mode="before")
+    @field_validator("INGESTION_WORKER_POLL_SECONDS", "CATALOG_SYNC_WORKER_POLL_SECONDS", "CATALOG_SYNC_SCHEDULER_POLL_SECONDS", mode="before")
     @classmethod
     def parse_ingestion_worker_poll_seconds(cls, v):
         if isinstance(v, str):
@@ -347,6 +363,14 @@ class Settings(BaseSettings):
             return v.lower()
         return v
 
+    @field_validator("SHOPIFY_ADMIN_API_VERSION")
+    @classmethod
+    def validate_shopify_admin_api_version(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not re.fullmatch(r"20\d{2}-(?:01|04|07|10)", normalized):
+            raise ValueError("SHOPIFY_ADMIN_API_VERSION must use a Shopify YYYY-MM release label")
+        return normalized
+
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
@@ -355,6 +379,9 @@ class Settings(BaseSettings):
     def validate_production_settings(self):
         if not self.is_production:
             return self
+
+        if self.SHOPIFY_WEBHOOKS_ENABLED and not self.SHOPIFY_WEBHOOK_SECRET.strip():
+            raise ValueError("SHOPIFY_WEBHOOK_SECRET is required when Shopify webhooks are enabled in production")
 
         missing = [
             name

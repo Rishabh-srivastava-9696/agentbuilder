@@ -8,6 +8,7 @@ import asyncio
 import csv
 import io
 import ipaddress
+import os
 import re
 import socket
 import uuid
@@ -29,6 +30,15 @@ from .job_store import JobStore
 logger = structlog.get_logger()
 
 _job_store = JobStore()
+_SHOPIFY_API_VERSION_PATTERN = re.compile(r"^20\d{2}-(?:01|04|07|10)$")
+
+
+def shopify_admin_api_version() -> str:
+    """Return an explicitly configured, current Shopify API release label."""
+    configured = str(os.environ.get("SHOPIFY_ADMIN_API_VERSION", "2026-04")).strip()
+    if not _SHOPIFY_API_VERSION_PATTERN.fullmatch(configured):
+        raise ValueError("SHOPIFY_ADMIN_API_VERSION must use the YYYY-MM Shopify release format.")
+    return configured
 
 
 async def create_job(job_id: str, job_type: str, brand_id: str, total: int = 0) -> None:
@@ -663,7 +673,7 @@ async def _fetch_shopify_default_currency(
     try:
         base = normalize_authenticated_shopify_store_url(base_url)
         base_host = urlsplit(base).hostname or ""
-        url = f"{base.rstrip('/')}/admin/api/2024-01/shop.json"
+        url = f"{base.rstrip('/')}/admin/api/{shopify_admin_api_version()}/shop.json"
         response = await client.get(url, headers=headers)
         is_redirect = bool(getattr(response, "is_redirect", False)) or response.status_code in {301, 302, 303, 307, 308}
         if is_redirect:
@@ -701,9 +711,10 @@ async def fetch_shopify_products(
     all_items: List[dict] = []
     started_at = datetime.utcnow().isoformat()
     try:
+        if not access_token or not access_token.strip():
+            raise ValueError("Shopify catalog sync requires an Admin API access token.")
         base = normalize_shopify_store_url(store_url)
-        if access_token and access_token.strip():
-            base = normalize_authenticated_shopify_store_url(base)
+        base = normalize_authenticated_shopify_store_url(base)
         explicit_fallback = normalize_currency_code(fallback_currency) if fallback_currency else await _resolve_configured_default_currency(brand_id)
         await _job_store.update(job_id, {
             "brand_id": brand_id,
@@ -744,18 +755,14 @@ async def fetch_shopify_products(
             await _job_store.update(job_id, {
                 "currency": resolved_currency,
                 "currency_source": currency_source,
-                "warning": None if access_token and access_token.strip() else "Public Shopify import: store currency and private products may be unavailable. Configure an Admin API token for production sync.",
+                "warning": None,
             })
             page_info: Optional[str] = None
             page = 1
             while True:
-                # Use Admin API if token is provided; otherwise public products.json
-                # Admin API bypasses storefront password protection
-                has_token = bool(access_token and access_token.strip())
-                if has_token:
-                    url = f"{base}/admin/api/2024-01/products.json?limit=250"
-                else:
-                    url = f"{base}/products.json?limit=250"
+                # Production syncs always use the authenticated Admin API.
+                has_token = True
+                url = f"{base}/admin/api/{shopify_admin_api_version()}/products.json?limit=250"
 
                 if page_info:
                     url += f"&page_info={page_info}"

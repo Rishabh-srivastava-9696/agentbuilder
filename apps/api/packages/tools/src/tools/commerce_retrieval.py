@@ -270,7 +270,12 @@ class CommerceRetrievalPipeline:
         if collection is None:
             return []
 
-        mongo_query: Dict[str, Any] = {"content_type": "product", **(filters or {})}
+        mongo_query: Dict[str, Any] = {
+            "content_type": "product",
+            "product_data.source_active": {"$ne": False},
+            "metadata.catalog_source.active": {"$ne": False},
+            **(filters or {}),
+        }
         if intent.budget_max is not None:
             max_price = max(float(intent.budget_max), float(intent.budget_max) * 100)
             mongo_query["product_data.price"] = {"$gt": 0, "$lte": max_price}
@@ -301,7 +306,10 @@ class CommerceRetrievalPipeline:
         products = []
         seen = set()
         for row in rows:
-            product = self._normalize_product(row.get("product_data") or {}, source="direct_catalog", row=row)
+            product_data = row.get("product_data") or {}
+            if product_data.get("source_active") is False:
+                continue
+            product = self._normalize_product(product_data, source="direct_catalog", row=row)
             identity = self._identity(product)
             if not identity or identity in seen:
                 continue
@@ -317,6 +325,8 @@ class CommerceRetrievalPipeline:
             if not product_data and isinstance(getattr(chunk, "metadata", None), dict):
                 product_data = chunk.metadata.get("product_data")
             if not isinstance(product_data, dict):
+                continue
+            if product_data.get("source_active") is False:
                 continue
             product = self._normalize_product(product_data, source="retrieval", row={"doc_id": getattr(chunk, "doc_id", None)})
             identity = self._identity(product)
@@ -445,6 +455,8 @@ class CommerceRetrievalPipeline:
             if key not in {"$or", "product_data.price"}
         }
         base_filters["content_type"] = "product"
+        base_filters["product_data.source_active"] = {"$ne": False}
+        base_filters["metadata.catalog_source.active"] = {"$ne": False}
 
         hydrated: List[Dict[str, Any]] = []
         for query in queries:
@@ -454,7 +466,10 @@ class CommerceRetrievalPipeline:
             ).limit(max_variants)
             rows = await cursor.to_list(length=max_variants)
             for row_index, row in enumerate(rows):
-                product = self._normalize_product(row.get("product_data") or {}, source="variant_hydration", row=row)
+                product_data = row.get("product_data") or {}
+                if product_data.get("source_active") is False:
+                    continue
+                product = self._normalize_product(product_data, source="variant_hydration", row=row)
                 product["_variant_rank"] = int(selected.get("_variant_rank") or 9999) + 1000 + row_index
                 hydrated.append(product)
             if hydrated:

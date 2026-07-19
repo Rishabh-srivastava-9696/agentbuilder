@@ -99,8 +99,18 @@ and bounded DOCX ZIP entry, expansion-size, and compression-ratio limits.
 Catalog import, sync configuration, and sync routes require a JWT or API key
 whose owner has access to the target `brand_id`. The API rejects private,
 loopback, link-local, and otherwise non-public JSON-feed destinations, including
-unsafe redirects. Shopify store URLs must be canonical HTTPS
-`<shop>.myshopify.com` hosts; credentialed redirects are refused.
+unsafe redirects. Production Shopify sync requires a canonical HTTPS
+`<shop>.myshopify.com` host and Admin API token; credentialed redirects are
+refused. Each brand can have one active Mongo-leased full snapshot, so an
+overlapping trigger returns the existing job with `deduplicated: true`.
+
+`POST /api/v1/catalog/shopify/webhooks` is Shopify-signed, not dashboard or
+API-key authenticated. It validates the raw-body HMAC, resolves the canonical
+shop to one enabled brand, and queues product lifecycle work. The Shopify MCP
+bridge verifies then forwards raw signed events to this API endpoint; it never
+acknowledges a webhook without a configured forward target. See the
+[P5 Shopify lifecycle contract](./P5_SHOPIFY_OPERATIONS.md) for the topic,
+retry, uninstall, and polling behavior.
 
 The Shopify MCP bridge is an internal service, not a public client API:
 
@@ -191,3 +201,5 @@ for tenant-control-plane and evidence-validation behavior, and the
 worker, and source-payload behavior, and the [P4 edge and knowledge
 hardening contract](./P4_EDGE_AND_KNOWLEDGE_HARDENING.md) for WebSocket,
 rate-limit, Qdrant, and legacy knowledge-upload requirements.
+See the [P5 Shopify lifecycle and release-evidence contract](./P5_SHOPIFY_OPERATIONS.md)
+for durable catalog sync, webhook, SBOM, and operational requirements.

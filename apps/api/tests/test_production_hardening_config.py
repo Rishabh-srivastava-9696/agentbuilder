@@ -35,3 +35,13 @@ def test_production_defaults_to_fail_closed_rate_limits_and_requires_qdrant_auth
 def test_production_rejects_fail_open_rate_limits():
     with pytest.raises(ValidationError, match="RATE_LIMIT_FAIL_CLOSED"):
         _production_settings(RATE_LIMIT_FAIL_CLOSED=False)
+
+
+def test_production_requires_a_signing_secret_when_shopify_webhooks_are_enabled():
+    with pytest.raises(ValidationError, match="SHOPIFY_WEBHOOK_SECRET"):
+        _production_settings(SHOPIFY_WEBHOOKS_ENABLED=True, SHOPIFY_WEBHOOK_SECRET="")
+
+
+def test_shopify_admin_api_release_label_is_validated():
+    with pytest.raises(ValidationError, match="SHOPIFY_ADMIN_API_VERSION"):
+        Settings(SECRET_KEY="test-secret", SHOPIFY_ADMIN_API_VERSION="latest")

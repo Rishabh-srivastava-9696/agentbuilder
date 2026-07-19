@@ -85,6 +85,42 @@ services:
           cpus: "1.0"
           memory: 1G
 
+  # Processes Mongo-leased Shopify catalog snapshots and signed webhook
+  # lifecycle actions. It deliberately shares the API image so catalog product
+  # normalization cannot drift from the deployed request path.
+  catalog-sync-worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: agentbuilder-api
+    container_name: agentbuilder-catalog-sync-worker
+    command: ["python", "-m", "app.workers.catalog_sync_worker"]
+    env_file:
+      - .env.docker
+    environment:
+      CATALOG_SYNC_WORKER: "true"
+      SHOPIFY_MCP_URL: "http://shopify:3005/mcp"
+      QDRANT_URL: "http://qdrant:6333"
+      ENVIRONMENT: "${ENVIRONMENT:-production}"
+      DEBUG: "${DEBUG:-false}"
+      REQUIRE_MONGODB: "${REQUIRE_MONGODB:-true}"
+      REQUIRE_REDIS: "false"
+      ALLOW_ADMIN_KEY_BYPASS: "${ALLOW_ADMIN_KEY_BYPASS:-false}"
+      STRAPI_URL: "${DOCKER_STRAPI_URL:-http://host.docker.internal:1337}"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
   # ── React Admin Dashboard ────────────────────────────────────────────────────
   admin:
     build:

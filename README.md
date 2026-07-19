@@ -65,6 +65,7 @@ Core services:
 | Admin | `apps/admin` | http://localhost:3000 | NOVA dashboard for brands, agents, settings, KB, observability |
 | Widget | `apps/widget` | http://localhost:5174 | Embeddable chat widget |
 | Shopify MCP | `apps/shopify-mcp` | http://localhost:3005 | Shopify OAuth and MCP bridge |
+| Catalog sync worker | `apps/api/app/workers/catalog_sync_worker.py` | internal | Mongo-leased Shopify full sync, delete, and uninstall lifecycle work |
 | MongoDB | Compose service | internal | Agent data, knowledge, memory, source of truth |
 | Qdrant | Compose-only internal service | not host-published | Local/self-hosted vector search; requires an API key |
 | Redis | Compose service | internal | Rate limits, jobs, pub/sub, session state |
@@ -279,7 +280,7 @@ npm test
 Full container build:
 
 ```bash
-docker compose build api admin widget shopify
+docker compose build api admin widget shopify catalog-sync-worker
 ```
 
 ---
